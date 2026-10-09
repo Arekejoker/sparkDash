@@ -246,7 +246,7 @@ export interface GpuMetricAvailability {
 }
 
 export interface GpuMetrics {
-  vendors?: Array<"amd" | "nvidia">;
+  vendors?: Array<"amd" | "nvidia" | "intel">;
   metricAvailability?: GpuMetricAvailability;
   temperature: number;
   usage: number;
@@ -279,15 +279,17 @@ export interface GpuMetrics {
   gpus?: GpuDevice[];
 }
 
-/** One physical GPU; `index` is a stable dashboard identity and `physicalIndex` is the vendor's index. */
+/** One physical GPU; `index` is a stable dashboard identity and `physicalIndex` is the vendor's index (nvidia-smi, amd-smi, or Intel sysfs). */
 export interface GpuDevice {
   /** Stable dashboard identity; AMD indices use a separate internal range. */
   index: number;
   /** Physical index reported by the vendor tool. */
   physicalIndex?: number;
-  vendor?: "amd" | "nvidia" | "apple";
+  /** Absent on payloads from servers older than vendor tagging; treat as "nvidia". */
+  vendor?: "amd" | "nvidia" | "apple" | "intel";
   metricAvailability?: GpuMetricAvailability;
   name: string | null;
+  /** NVIDIA GPU uuid; null for other vendors. */
   uuid: string | null;
   temperature: number;
   usage: number;
@@ -296,6 +298,10 @@ export interface GpuDevice {
   throttle?: GpuThrottle | null;
   /** Processes holding memory on this card only. */
   processes?: Array<{ pid: number; name: string; vramMB: number }>;
+  /** Intel only: fan speed in rpm, null when the card has no fan sensor. */
+  fanRpm?: number | null;
+  /** Intel only: "debugfs" = measured VRAM use; "pci-bar" = total only, used is unknown (shown as 0). */
+  vramSource?: "debugfs" | "pci-bar";
 }
 
 // ─── CPU metrics ─────────────────────────────────────────

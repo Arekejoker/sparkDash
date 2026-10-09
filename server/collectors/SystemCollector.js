@@ -5,6 +5,7 @@ import { HOST_PATHS, GPU_MEMORY_JSON_PATH, DGX_SPARK, HARDWARE_DEFAULTS, POLL_IN
 import { normalizeMac, WOL_INTERFACE } from "../wol.js";
 import { sshExec } from "./ssh.js";
 import { RoceSampler } from "./roce.js";
+import { IntelSudoGate, IntelVramCache, buildIntelProbeScript, parseIntelProbe, sampleIntelCards } from "./intelGpu.js";
 import {
   WINDOWS_GPU_SCRIPT,
   WINDOWS_SYSTEM_SCRIPT,
@@ -174,7 +175,7 @@ export function parseMacmonSample(output) {
   }
 }
 
-const REMOTE_GPU_SECTIONS = new Set(["NVIDIA", "NVIDIA_VRAM", "NVIDIA_APPS", "AMD", "AMD_LIMITS", "MEMINFO", "CLOCK_CAP"]);
+const REMOTE_GPU_SECTIONS = new Set(["NVIDIA", "NVIDIA_VRAM", "NVIDIA_APPS", "AMD", "AMD_LIMITS", "INTEL", "MEMINFO", "CLOCK_CAP"]);
 
 /**
  * Split the remote GPU probe output into named sections. A section starts at a
@@ -209,6 +210,7 @@ const AMD_SMI_RESOLVER = [
 // Keep vendor namespaces disjoint so collection failures cannot make AMD reuse
 // an NVIDIA device's index in per-card histories or Prometheus labels.
 const AMD_GPU_INDEX_OFFSET = 1000;
+const INTEL_GPU_INDEX_OFFSET = 2000;
 
 function tagCollectionResult(result, successful) {
   Object.defineProperty(result, COLLECTION_SUCCESS, {
@@ -320,6 +322,14 @@ export class SystemCollector {
 
     // GPU VRAM per-PID cache
     this.nvidiaComputeAppsCache = new Map();
+    // Intel (xe) energy / idle-residency baselines per PCI address
+    this._intelState = new Map();
+    // Remembers a failed `sudo -n` VRAM read so it is not retried every poll
+    this._intelSudo = new IntelSudoGate();
+    // Last debugfs VRAM reading, so working `sudo -n` runs once per window, not per poll
+    this._intelVram = new IntelVramCache();
+    // Whether any xe-driver card exists on this host (local path), re-checked rarely
+    this._intelPresent = { value: null, at: 0 };
 
     // Cached hardware info
     this._hardwareInfo = null;
@@ -565,23 +575,25 @@ export class SystemCollector {
 
   // ─── GPU helpers ─────────────────────────────────────────
   async _getGPUAll() {
-    const [gpuOut, amd, clockCapMHz] = await Promise.all([
+    const vramRead = this._intelVram.stale;
+    const [gpuOut, amd, clockCapMHz, intelOut] = await Promise.all([
       this._nvidiaSmi(
         "--query-gpu=temperature.gpu,utilization.gpu,power.draw,power.limit,clocks.current.sm,clocks.max.sm,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.sw_thermal_slowdown,clocks_throttle_reasons.hw_slowdown,clocks_throttle_reasons.sw_power_cap,index,name,uuid --format=csv,noheader,nounits"
       ).catch(() => ""),
       this._probeLocalAmd(),
       this._readLocalClockCap(),
+      this._probeIntelLocal(vramRead),
     ]);
     const nvidiaDevices = this._parseGpuLines(gpuOut);
     this._applyClockCap(nvidiaDevices, clockCapMHz);
-    const amdDevices = amd.devices;
+    const otherDevices = [...amd.devices, ...this._intelDevices(this._sampleIntel(intelOut, vramRead))];
     this._lastVramPerDevice = [];
     const nvidiaVram = nvidiaDevices.length ? await this._queryNvidiaVram() : { used: 0, total: 0, percentage: 0, available: 0 };
-    const amdVram = this._sumDeviceVram(amdDevices);
-    const devices = [...nvidiaDevices, ...amdDevices];
+    const otherVram = this._sumDeviceVram(otherDevices);
+    const devices = [...nvidiaDevices, ...otherDevices];
     const gpu = this._aggregateGpuDevices(devices);
     if (!nvidiaDevices.length) this.nvidiaComputeAppsCache.clear();
-    const vram = this._combineVram(nvidiaVram, amdVram);
+    const vram = this._combineVram(nvidiaVram, otherVram);
 
     // Estimate total system power: GPU draw + CPU draw + ~20W CX7/peripherals
     let systemDraw = gpu.powerDraw;
@@ -607,7 +619,7 @@ export class SystemCollector {
       kernelErrors: await this._kernelErrors(),
       gpus: [
         ...this._buildGpuDevices(nvidiaDevices, this._lastVramPerDevice ?? [], apps, nvidiaVram),
-        ...amdDevices,
+        ...otherDevices,
       ],
       vendors: [...new Set(devices.map((device) => device.vendor))],
       metricAvailability: {
@@ -637,6 +649,115 @@ export class SystemCollector {
       devices: parseAmdSmiMetrics(metricsOut, limitsOut)
         .map((device) => ({ ...device, index: AMD_GPU_INDEX_OFFSET + device.index })),
     };
+  }
+
+  /** Intel (xe) probe on this host, in the host mount namespace. "" when unavailable. */
+  async _probeIntelLocal(vram = true) {
+    if (process.platform !== "linux") return "";
+    if (!this._hasXeCard()) return "";
+    try {
+      return await this._execOnHost(buildIntelProbeScript({ sudo: this._intelSudo.allowed, vram }));
+    } catch {
+      return "";
+    }
+  }
+
+  /** Where sysfs may be mounted: the host bind mount in the container, else /sys. */
+  _sysRoots() {
+    return [HOST_PATHS.SYS, "/sys"];
+  }
+
+  /**
+   * Whether an `xe`-driver card is present, read from sysfs without spawning
+   * anything. Cached; re-checked every 10 minutes so a hot-added card is found
+   * eventually. A failed read counts as "maybe" and is not cached.
+   */
+  _hasXeCard() {
+    const c = this._intelPresent;
+    const now = Date.now();
+    if (c.value != null && now - c.at < 10 * 60 * 1000) return c.value;
+    try {
+      const root = this._sysRoots()
+        .map((r) => path.join(r, "class/drm"))
+        .find((d) => fs.existsSync(d));
+      let found = false;
+      if (root) {
+        for (const name of fs.readdirSync(root)) {
+          if (!/^card\d+$/.test(name)) continue;
+          try {
+            if (path.basename(fs.readlinkSync(path.join(root, name, "device/driver"))) === "xe") {
+              found = true;
+              break;
+            }
+          } catch {
+            // no driver bound
+          }
+        }
+      }
+      this._intelPresent = { value: found, at: now };
+      return found;
+    } catch {
+      return true;
+    }
+  }
+
+  /** Probe output -> sampled Intel cards (power and usage from counter deltas). [] when none. */
+  _sampleIntel(probeOut, vramRead = true) {
+    const cards = parseIntelProbe(probeOut);
+    this._intelSudo.observe(cards);
+    this._intelVram.apply(cards, vramRead);
+    const { devices, next } = sampleIntelCards(cards, this._intelState);
+    this._intelState = next;
+    return devices.map((d) => ({
+      ...d,
+      throttle: this._buildThrottle({ smClockMHz: d.smClockMHz, smClockMaxMHz: d.smClockMaxMHz }),
+    }));
+  }
+
+  /**
+   * Sampled Intel cards as finished devices, the same shape parseAmdSmiMetrics
+   * returns, in their own index range. Missing numbers are reported as
+   * unavailable instead of zero: no power cap file means no power limit, and a
+   * card whose VRAM usage could not be read (debugfs not readable) only knows
+   * its PCI BAR size.
+   */
+  _intelDevices(sampled) {
+    return sampled.map((d, i) => {
+      const measured = d.vramSource === "debugfs";
+      const used = measured ? d.vramUsedMB : 0;
+      const total = d.vramTotalMB;
+      return {
+        index: INTEL_GPU_INDEX_OFFSET + i,
+        physicalIndex: i,
+        name: d.name,
+        uuid: null,
+        vendor: "intel",
+        pci: d.pci,
+        temperature: d.temperature,
+        usage: d.usage,
+        powerDraw: d.powerDraw,
+        powerLimit: d.powerLimit,
+        power: { draw: d.powerDraw, limit: d.powerLimit },
+        vram: {
+          used,
+          total,
+          percentage: total > 0 ? Math.round((used / total) * 100) : 0,
+          available: Math.max(0, total - used),
+        },
+        fanRpm: d.fanRpm ?? null,
+        vramSource: d.vramSource,
+        metricAvailability: {
+          temperature: d.temperature > 0,
+          usage: true,
+          powerDraw: true,
+          powerLimit: d.powerLimit > 0,
+          vramUsed: measured,
+          vramTotal: total > 0,
+        },
+        throttle: d.throttle,
+        processes: [],
+      };
+    });
   }
 
   _sumDeviceVram(devices) {
@@ -1698,9 +1819,11 @@ export class SystemCollector {
   // ─── Remote collection via SSH ────────────────────────────
   async _getRemoteGpu(executor = sshExec) {
     try {
+      const vramRead = this._intelVram.stale;
       const cmd = [
         "if command -v nvidia-smi >/dev/null 2>&1; then printf '\\n__NVIDIA__\\n'; nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,power.draw,power.limit,clocks.current.sm,clocks.max.sm,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.sw_thermal_slowdown,clocks_throttle_reasons.hw_slowdown,clocks_throttle_reasons.sw_power_cap,index,name,uuid --format=csv,noheader,nounits 2>/dev/null; printf '\\n__NVIDIA_VRAM__\\n'; nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null; printf '\\n__NVIDIA_APPS__\\n'; nvidia-smi --query-compute-apps=pid,process_name,used_gpu_memory,gpu_uuid --format=csv,noheader,nounits 2>/dev/null; fi",
         `${AMD_SMI_RESOLVER}; if [ -n "$amd_smi" ]; then printf '\\n__AMD__\\n'; "$amd_smi" metric -u -p -m -t --json 2>/dev/null; printf '\\n__AMD_LIMITS__\\n'; "$amd_smi" static -l --json 2>/dev/null; fi`,
+        `printf '\\n__INTEL__\\n'; ${buildIntelProbeScript({ sudo: this._intelSudo.allowed, vram: vramRead })}`,
         "printf '\\n__MEMINFO__\\n'; grep -E 'MemTotal|MemAvailable' /proc/meminfo 2>/dev/null",
         `printf '\\n__CLOCK_CAP__\\n'; ${CLOCK_CAP_CMD}`,
       ].join("; ");
@@ -1713,6 +1836,7 @@ export class SystemCollector {
       const computeOut = section("NVIDIA_APPS");
       const amdMetrics = section("AMD");
       const amdLimits = section("AMD_LIMITS");
+      const intelOut = section("INTEL");
       const meminfoOut = section("MEMINFO");
       // Keep compatibility with existing injected executor fixtures and older command results.
       const legacy = !("MEMINFO" in sections);
@@ -1727,7 +1851,10 @@ export class SystemCollector {
       const apps = this._parseComputeApps(legacy ? (legacySections[2] || "") : computeOut);
       const amdDevices = legacy ? [] : parseAmdSmiMetrics(amdMetrics, amdLimits)
         .map((device) => ({ ...device, index: AMD_GPU_INDEX_OFFSET + device.index }));
-      const gpuDevices = [...cliDevices, ...amdDevices];
+      // Probe output only exists in the section format; legacy fixtures carry no Intel data.
+      const intelDevices = this._intelDevices(this._sampleIntel(legacy ? "" : intelOut, vramRead));
+      const otherDevices = [...amdDevices, ...intelDevices];
+      const gpuDevices = [...cliDevices, ...otherDevices];
       const gpu = this._aggregateGpuDevices(gpuDevices);
       if (!gpuDevices.length) return this._defaultGpu();
       let { used: cliUsed, total: cliTotal } = this._sumVram(perDeviceVram);
@@ -1744,9 +1871,9 @@ export class SystemCollector {
       }
       if ((cliUsed == null || cliUsed === 0) && computeSum > 0) cliUsed = computeSum;
 
-      const amdVram = this._sumDeviceVram(amdDevices);
+      const otherVram = this._sumDeviceVram(otherDevices);
       const cliVram = { used: cliUsed || 0, total: cliTotal || 0, available: Math.max(0, (cliTotal || 0) - (cliUsed || 0)) };
-      const combinedVram = this._combineVram(cliVram, amdVram);
+      const combinedVram = this._combineVram(cliVram, otherVram);
 
       // Unified-memory pool: prefer MemTotal (OS-visible) so VRAM and Unified
       // Memory panels share the same base. Available = MemAvailable (real free).
@@ -1768,7 +1895,7 @@ export class SystemCollector {
           total: resolvedTotal,
           available: availMatch ? availableMB : Math.max(0, resolvedTotal - Math.round(cliUsed || 0)),
         };
-        totalMB = resolvedTotal + Math.round(amdVram.total || 0);
+        totalMB = resolvedTotal + Math.round(otherVram.total || 0);
       }
       if (this.spark.kind === "host") {
         // Discrete GPU VRAM: trust vendor-reported memory. Unknown capacity
@@ -1783,9 +1910,9 @@ export class SystemCollector {
       } else {
         // GB10 shared HBM pool: prefer the OS-visible pool (MemTotal) as the total,
         // fall back to nvidia-smi, then the hardware spec (HBM) only if nothing known.
-        if (cliDevices.length && memTotalMB > 0) totalMB = memTotalMB + Math.round(amdVram.total || 0);
+        if (cliDevices.length && memTotalMB > 0) totalMB = memTotalMB + Math.round(otherVram.total || 0);
         else if (cliDevices.length && totalMB <= 0) totalMB = DGX_SPARK.MEMORY_HBM_SIZE_GB * 1024;
-        if (!cliDevices.length && amdDevices.length) availableMB = Math.round(amdVram.available || 0);
+        if (!cliDevices.length && otherDevices.length) availableMB = Math.round(otherVram.available || 0);
       }
       const percentage = totalMB > 0 ? Math.round((usedMB / totalMB) * 100) : 0;
 
@@ -1818,7 +1945,7 @@ export class SystemCollector {
         kernelErrors: await this._kernelErrors(),
         gpus: [
           ...this._buildGpuDevices(cliDevices, perDeviceVram, cachedApps, resolvedCliVram),
-          ...amdDevices,
+          ...otherDevices,
         ],
         vendors: [...new Set(gpuDevices.map((device) => device.vendor))],
         metricAvailability: {
