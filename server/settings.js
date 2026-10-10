@@ -62,6 +62,11 @@ const DEFAULTS = Object.freeze({
    * Off by default: when off the path answers 404.
    */
   prometheusExport: false,
+  /**
+   * Let the Intel (xe) probe read root-only debugfs VRAM through `sudo -n`.
+   * Off by default: without it VRAM falls back to the PCI BAR size and no sudo runs.
+   */
+  intelVramSudo: false,
   /** VulnHunter scans, installs and harness-command changes (they run an agent on a unit). Opt-in, off by default. */
   vulnhuntEnabled: false,
   /** REA (Tools): install, uploads and analysis runs on a unit. Opt-in, off by default. */
@@ -145,6 +150,7 @@ function _clampSettings(settings) {
   s.timeZone = isValidTimeZone(s.timeZone) ? String(s.timeZone).trim() : "";
   s.showVramBreakdown = Boolean(s.showVramBreakdown);
   s.prometheusExport = Boolean(s.prometheusExport);
+  s.intelVramSudo = Boolean(s.intelVramSudo);
   s.vulnhuntEnabled = Boolean(s.vulnhuntEnabled);
   s.reaEnabled = Boolean(s.reaEnabled);
   s.metricsHistory = Boolean(s.metricsHistory);

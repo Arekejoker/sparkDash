@@ -92,3 +92,10 @@ test("every Overview panel is shown by default (an older file gets that too) and
     assert.equal(updateSettings({ [k]: true })[k], true, k);
   }
 });
+
+test("intelVramSudo is opt-in and stored as a boolean", () => {
+  fs.writeFileSync(process.env.SETTINGS_JSON_PATH, JSON.stringify({ density: "compact" }));
+  assert.equal(loadSettings().intelVramSudo, false);
+  assert.equal(updateSettings({ intelVramSudo: "yes" }).intelVramSudo, true);
+  assert.equal(updateSettings({ intelVramSudo: 0 }).intelVramSudo, false);
+});

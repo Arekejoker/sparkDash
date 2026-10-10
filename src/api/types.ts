@@ -914,6 +914,8 @@ export interface Settings {
   showVramBreakdown: boolean;
   /** Serve GET /metrics in Prometheus text format. Off by default (404 when off). */
   prometheusExport: boolean;
+  /** Let the Intel (xe) probe read debugfs VRAM through sudo -n. Off by default. */
+  intelVramSudo: boolean;
   /** VulnHunter scans, installs and harness-command changes are opt-in (off by default). */
   vulnhuntEnabled: boolean;
   /** REA (Tools): install, uploads and analysis runs on a unit are opt-in (off by default). */

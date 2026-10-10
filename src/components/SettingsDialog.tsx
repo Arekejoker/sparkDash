@@ -354,6 +354,12 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
                 onChange={(v) => update({ prometheusExport: v })}
               />
               <ToggleRow
+                title="Intel Arc VRAM via sudo"
+                help="Reads exact Intel Arc VRAM use from root-only debugfs with sudo -n on each host. Off by default: VRAM then shows the PCI BAR size and nothing runs with sudo."
+                checked={Boolean(settings.intelVramSudo)}
+                onChange={(v) => update({ intelVramSudo: v })}
+              />
+              <ToggleRow
                 title="VulnHunter scans"
                 help="Lets the VulnHunter page (Benchmarks) install VulnHunter on a unit, save your agent harness's command there and run scans. A scan starts an AI agent on the unit as its SSH user, so this is off by default; anyone who can reach this dashboard can use it once it is on, so set SPARKDASH_TOKEN if others can."
                 checked={Boolean(settings.vulnhuntEnabled)}
