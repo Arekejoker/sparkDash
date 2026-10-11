@@ -9,6 +9,9 @@ Format: version sections are listed newest first.
 
 ## [Unreleased]
 
+### Added
+- **Every Overview panel can be hidden.** Settings now has switches for Recent activity and for each of the four tiles (Fleet decode, Fleet power, Memory in use, Tokens today), next to the existing Fleet energy and LLM token totals ones. The remaining tiles share the row, and a column with nothing left in it disappears. Hidden panels stay available from the sidebar pages. Suggested by a user.
+
 ### Fixed
 - **Windows PCs: "keys work everywhere but here".** The setup docs now explain that for an administrator account `sshd` ignores `~/.ssh/authorized_keys` and reads `C:\ProgramData\ssh\administrators_authorized_keys`, which only Administrators and SYSTEM may write (with the `icacls` command), and a refused key on a Windows unit adds the same hint to the connection error. Suggested by a user.
 

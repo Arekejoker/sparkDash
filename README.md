@@ -690,6 +690,8 @@ Gear icon in the header, or `GET`/`PUT` `/api/settings`:
 | Show Fleet Energy | true | Overview card with rolling fleet power estimates (the Fleet energy page is always in the sidebar) |
 | Electricity price / currency | not set / `$` | Per kWh, for the estimated cost on the Fleet energy page; empty hides cost |
 | Show LLM Token Totals | true | Overview card with cumulative tokens per model |
+| Show Recent activity | true | Overview card with the latest health and kernel events (the Activity page is always in the sidebar) |
+| Show Fleet decode / Fleet power / Memory in use / Tokens today tile | true | Each of the four Overview tiles can be hidden on its own; the rest share the row (Tokens today also covers the Online count that replaces it when no tokens are tracked) |
 | Show active fleet exceptions | false | Overview strip for offline units, throttling, disk and LLM alerts |
 | Show search and status filters | false | Overview search field and status dropdown |
 | Save benchmark debug traces | false | Store prompts, HTTP ids and GPU samples in bench history (larger files) |

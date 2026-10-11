@@ -709,6 +709,12 @@ export interface Settings {
   /** Overview search field + status filter. Off by default. */
   showOverviewSearch: boolean;
   showLlmTokenTotals: boolean;
+  /** Overview KPI tiles and the Recent activity card; each can be hidden. All on by default. */
+  showKpiDecode?: boolean;
+  showKpiPower?: boolean;
+  showKpiMemory?: boolean;
+  showKpiTokens?: boolean;
+  showActivityFeed?: boolean;
   /** Benchmark dialogs offer "Copy image" — a PNG share card of the results. */
   benchShareImage: boolean;
   /** IANA time zone for the Tokens, Energy and Activity charts; "" follows the browser. */
