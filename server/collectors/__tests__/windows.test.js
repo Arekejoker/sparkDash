@@ -239,3 +239,12 @@ test("WINDOWS_GPU_SCRIPT carries the AMD fallback and clamps engine utilization"
   assert.match(WINDOWS_GPU_SCRIPT, /\ -gt 100/);
   assert.match(WINDOWS_GPU_SCRIPT, /qwMemorySize/);
 });
+
+test("the AMD fallback runs only when nvidia-smi is not installed, never when it is installed but failing", () => {
+  // A PC with a broken NVIDIA driver must stay empty (and fail the connection test) rather than
+  // show a GPU invented from the performance counters.
+  assert.match(WINDOWS_GPU_SCRIPT, /if\(-not \$s\)\{\n  \$eng = /);
+  assert.doesNotMatch(WINDOWS_GPU_SCRIPT, /if\(-not \$gpu\)/);
+  // The NVSMI default path only counts when the file exists.
+  assert.match(WINDOWS_GPU_SCRIPT, /Test-Path \$p/);
+});

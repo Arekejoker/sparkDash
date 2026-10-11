@@ -24,23 +24,6 @@ const LMSTUDIO_MODELS_PATH = "/api/v0/models";
 const LMSTUDIO_PROBE_TIMEOUT_MS = 8000;
 const OLLAMA_TAGS_PATH = "/api/tags";
 /**
- * Engines without token counters (LM Studio, Ollama) get their tok/s from a
- * tiny streamed request: chunk intervals → decode tok/s, time-to-first-token
- * over a known-size prompt → prefill tok/s. One request per interval.
- */
-const ACTIVE_TPS_INTERVAL_MS = 60_000;
-const ACTIVE_TPS_TIMEOUT_MS = 45_000;
-const ACTIVE_TPS_MAX_TOKENS = 24;
-/** TTFT beyond this means the probe queued behind real traffic — prefill unknown. */
-const ACTIVE_TPS_MAX_TTFT_MS = 4000;
-const ACTIVE_TPS_PROMPT =
-  "Read the following passage and reply with the single word: ok.\n\n" +
-  "The quick brown fox jumps over the lazy dog while the farmer watches from " +
-  "his porch. Rain had fallen all week, filling the ditches along the road, " +
-  "and the fields beyond the fence were soft with mud. In the evening the " +
-  "children came home from school and helped stack the firewood under the " +
-  "eaves. Later the sky cleared and the first stars appeared over the hills. ".repeat(28);
-/**
  * Fields a genuine SGLang /server_info|/get_server_info payload carries. Some
  * servers (LM Studio) answer 200 with a JSON body on EVERY path, so "is it an
  * object" is not enough to classify — require SGLang-shaped fields.
@@ -121,9 +104,6 @@ export class LlmProbe {
 
     // State
     this.backendType = null; // 'vllm' | 'llama.cpp' | 'sglang' | 'lmstudio' | 'ollama' | 'ds4' | 'exl3' | 'q27' | 'tensorfold' | 'freetoken' | null
-    /** Chat model used for the active throughput probe (embedding models excluded). */
-    this._chatProbeModel = null;
-    this._lastActiveTpsProbeAt = 0;
     this.serverIsOpenAI = null; // true = OpenAI-compatible
     /** Whether /v1/models (or /slots) answered without credentials. null = unknown. */
     this.authOpen = null;
@@ -643,36 +623,21 @@ export class LlmProbe {
    * No other OpenAI-compatible server exposes this shape.
    */
   async _probeIsLmStudio() {
-    // LM Studio is a single-threaded server on the probed machine; while it is
-    // busy (generating) responses can exceed the normal probe timeout, so
-    // detection gets a longer budget and a second attempt — a misfire here
-    // silently downgrades the backend label to "vllm".
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const res = await this._fetch(`${this.baseUrl}${LMSTUDIO_MODELS_PATH}`, LMSTUDIO_PROBE_TIMEOUT_MS);
-        if (!res.ok) return false;
-        const data = await res.json().catch(() => null);
-        if (!data || typeof data !== "object" || !Array.isArray(data.data) || data.data.length === 0) {
-          return false;
-        }
-        return data.data.every(
-          (m) => m && typeof m === "object" && typeof m.id === "string" && "state" in m
-        ) && this._stashLmStudioChatModel(data.data);
-      } catch {
-        /* retry once, then give up */
+    // LM Studio is a single-threaded server on the probed machine; while it is busy
+    // (generating) responses can exceed the normal probe timeout, and a miss silently
+    // downgrades the backend label to "vllm", so detection gets a longer budget. One
+    // attempt only: a port that hangs on this path must not stall the poll for twice that.
+    try {
+      const res = await this._fetch(`${this.baseUrl}${LMSTUDIO_MODELS_PATH}`, LMSTUDIO_PROBE_TIMEOUT_MS);
+      if (!res.ok) return false;
+      const data = await res.json().catch(() => null);
+      if (!data || typeof data !== "object" || !Array.isArray(data.data) || data.data.length === 0) {
+        return false;
       }
+      return data.data.every((m) => m && typeof m === "object" && typeof m.id === "string" && "state" in m);
+    } catch {
+      return false;
     }
-    return false;
-  }
-
-  /** Remember a non-embedding model id for the active throughput probe. */
-  _stashLmStudioChatModel(entries) {
-    if (this._chatProbeModel) return true;
-    const chat = entries.find(
-      (m) => typeof m?.id === "string" && m.type != null && m.type !== "embedding"
-    );
-    if (chat) this._chatProbeModel = chat.id;
-    return true;
   }
 
   /**
@@ -754,14 +719,6 @@ export class LlmProbe {
           typeof model?.id === "string" && model.id.trim().length > 0
         );
         this.models = [...new Set(validModels.map((model) => model.id))];
-        // Chat model for the active tok/s probe (embedding models can't complete).
-        if (
-          (this.backendType === "lmstudio" || this.backendType === "ollama") &&
-          !this._chatProbeModel
-        ) {
-          this._chatProbeModel =
-            validModels.find((m) => !/embed/i.test(m.id))?.id ?? validModels[0]?.id ?? null;
-        }
         const model = validModels[0];
         servedModelId = this.models.length > 1
           ? model.id
@@ -957,110 +914,7 @@ export class LlmProbe {
       }
     }
 
-    // Engines without token counters (LM Studio, Ollama): measure tok/s with a
-    // tiny streamed request instead of reporting 0 forever.
-    if (this.backendType === "lmstudio" || this.backendType === "ollama") {
-      await this._measureThroughputActive();
-    }
-
     return this._getSnapshot();
-  }
-
-  /**
-   * Active throughput probe for counter-less engines. Every
-   * ACTIVE_TPS_INTERVAL_MS, stream a small completion over a sizeable prompt:
-   * chunk-interval timing gives decode tok/s; TTFT over the known prompt size
-   * gives prefill tok/s (skipped when the TTFT says we queued behind traffic).
-   * Values persist until the next measurement — they are the engine's current
-   * speed, refreshed every interval, not a per-poll counter diff.
-   */
-  async _measureThroughputActive() {
-    const now = Date.now();
-    if (now - this._lastActiveTpsProbeAt < ACTIVE_TPS_INTERVAL_MS) return;
-    this._lastActiveTpsProbeAt = now;
-    const model = this._chatProbeModel || this.models[0];
-    if (!model) return;
-    try {
-      const res = await this._fetch(`${this.baseUrl}/v1/chat/completions`, ACTIVE_TPS_TIMEOUT_MS, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          stream: true,
-          max_tokens: ACTIVE_TPS_MAX_TOKENS,
-          temperature: 0,
-          stream_options: { include_usage: true },
-          messages: [{ role: "user", content: ACTIVE_TPS_PROMPT }],
-        }),
-      });
-      if (!res.ok || !res.body) return;
-      let contentChunks = 0;
-      let tFirst = 0;
-      let tLast = 0;
-      let promptTokens = 0;
-      let buf = "";
-      for await (const chunk of res.body) {
-        buf += Buffer.from(chunk).toString("utf8");
-        let nl;
-        while ((nl = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line.startsWith("data:")) continue;
-          const payload = line.slice(5).trim();
-          if (!payload || payload === "[DONE]") continue;
-          let evt;
-          try {
-            evt = JSON.parse(payload);
-          } catch {
-            continue;
-          }
-          const delta = evt?.choices?.[0]?.delta ?? {};
-          // Reasoning models stream reasoning_content before/instead of content;
-          // every streamed token counts as decode regardless of which field.
-          const text = delta.content ?? delta.reasoning_content;
-          if (typeof text === "string" && text.length > 0) {
-            const t = Date.now();
-            if (!tFirst) tFirst = t;
-            tLast = t;
-            contentChunks++;
-          }
-          if (evt?.usage?.prompt_tokens > 0) promptTokens = evt.usage.prompt_tokens;
-        }
-      }
-      if (!promptTokens) promptTokens = Math.round(ACTIVE_TPS_PROMPT.length / 4);
-      const measured = LlmProbe._activeTpsFromStream({
-        tSend: now,
-        tFirst,
-        tLast,
-        contentChunks,
-        promptTokens,
-      });
-      if (measured.decode != null) this.generationTps = measured.decode;
-      if (measured.prefill != null) this.prefillTps = measured.prefill;
-    } catch {
-      /* best-effort: keep the last good measurement */
-    }
-  }
-
-  /**
-   * Compute decode/prefill tok/s from active-probe stream timings.
-   * Decode = (contentChunks − 1) over the first→last chunk span — the first
-   * chunk carries the TTFT (queue + prefill), only the gaps between chunks
-   * measure generation. Prefill = promptTokens / TTFT, but only when the TTFT
-   * is small enough to be prefill rather than queue wait.
-   * @param {{tSend: number, tFirst: number, tLast: number, contentChunks: number, promptTokens: number}} s
-   * @returns {{decode: number | null, prefill: number | null}}
-   */
-  static _activeTpsFromStream({ tSend, tFirst, tLast, contentChunks, promptTokens }) {
-    const out = { decode: null, prefill: null };
-    if (contentChunks >= 2 && tLast > tFirst) {
-      out.decode = Math.round(((contentChunks - 1) / ((tLast - tFirst) / 1000)) * 100) / 100;
-    }
-    const ttftMs = tFirst - tSend;
-    if (promptTokens > 0 && ttftMs > 0 && ttftMs < ACTIVE_TPS_MAX_TTFT_MS) {
-      out.prefill = Math.round((promptTokens / (ttftMs / 1000)) * 100) / 100;
-    }
-    return out;
   }
 
   /**

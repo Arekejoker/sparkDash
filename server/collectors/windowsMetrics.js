@@ -23,10 +23,11 @@ export function powershellCommand(script) {
 
 /**
  * nvidia-smi: per-GPU stats, memory, compute apps. Same queries the Linux
- * collector uses. On a machine without nvidia-smi (an AMD-iGPU Windows host,
- * e.g. a Strix Halo) the same sections are produced from the GPU Engine /
+ * collector uses. On a machine without nvidia-smi installed (an AMD-iGPU Windows
+ * host, e.g. a Strix Halo) the same sections are produced from the GPU Engine /
  * GPU Adapter Memory performance counters instead, so the parser needs no
- * Windows- or vendor-specific branch:
+ * Windows- or vendor-specific branch. An NVIDIA PC whose nvidia-smi is installed
+ * but failing stays empty (a broken driver must not look like a working AMD GPU):
  *   - utilization: busiest engine per physical adapter, sampled 3× 300 ms apart
  *     (the counter is instantaneous and inference leaves idle gaps between
  *     kernels), clamped to 100 — AMD engines can report >100%;
@@ -40,7 +41,7 @@ export function powershellCommand(script) {
 export const WINDOWS_GPU_SCRIPT = [
   ...PREAMBLE,
   "$s=(Get-Command nvidia-smi|Select-Object -First 1).Source",
-  "if(-not $s){$s=\"$env:ProgramFiles\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe\"}",
+  "if(-not $s){$p=\"$env:ProgramFiles\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe\";if(Test-Path $p){$s=$p}}",
   "$gpu=@();$mem=@();$apps=@();$names=@();$meminfo=@()",
   "if($s){",
   "  $gpu = & $s '--query-gpu=temperature.gpu,utilization.gpu,power.draw,power.limit,clocks.current.sm,clocks.max.sm,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.sw_thermal_slowdown,clocks_throttle_reasons.hw_slowdown,clocks_throttle_reasons.sw_power_cap,index,name,uuid' '--format=csv,noheader,nounits' 2>$null",
@@ -48,7 +49,7 @@ export const WINDOWS_GPU_SCRIPT = [
   "  $apps = & $s '--query-compute-apps=pid,process_name,used_gpu_memory,gpu_uuid' '--format=csv,noheader,nounits' 2>$null",
   "  $names = & $s '--query-gpu=name,driver_version' '--format=csv,noheader,nounits' 2>$null",
   "}",
-  "if(-not $gpu){",
+  "if(-not $s){",
   "  $eng = 1..3 | % { gcim Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine | ? { $_.UtilizationPercentage -gt 0 -and $_.Name -match '_phys_(\\d+)' } | % { [pscustomobject]@{P=[int]$Matches[1];U=[double]$_.UtilizationPercentage} }; sleep -m 300 }",
   "  $vc=@(gcim Win32_VideoController | ? { $_.Name -notmatch 'NVIDIA' })",
   "  $rs=@{}",
