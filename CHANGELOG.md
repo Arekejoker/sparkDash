@@ -10,6 +10,7 @@ Format: version sections are listed newest first.
 ## [Unreleased]
 
 ### Added
+- **Security scans (VulnHunter).** A new **Security** page runs [VulnHunter](https://github.com/nealbridges/VulnHunter), an agentic source-code security scanner, on a unit against a git URL or a checkout there, detached on the unit like Tool Eval. It shows live output, a parsed report (findings by severity, CWE, exploit-test status, PoC files) and a per-unit history, and records start/finish in Activity. Opt-in: install VulnHunter and put your harness's headless command in `~/.config/sparkdash/vulnhunt-host-cmd` on the unit (the dashboard never accepts a command). Scans need an explicit authorization confirmation, are read-only by default, accept only https git URLs or paths under the unit user's home, and show the agent's report as plain text. No new dependencies. See README → Security scans.
 - **Models panel: "Run both".** Starting a model while another launcher on the same unit is running now offers **Run both** next to **Stop it, then start**, so two models can share a unit without starting the second by hand. The start script can still refuse if memory is short. Thanks @ZackSample (#195).
 
 ### Fixed
