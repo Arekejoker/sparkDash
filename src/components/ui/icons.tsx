@@ -383,6 +383,16 @@ export function TokensIcon({ className = "" }: { className?: string }) {
   );
 }
 
+/** Shield with a check: security scans. */
+export function ShieldIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg {...baseProps(className)}>
+      <path d="M12 3 4.5 6v5.5c0 4.4 3.1 8.1 7.5 9.5 4.4-1.4 7.5-5.1 7.5-9.5V6L12 3Z" />
+      <path d="m9 12 2.2 2.2L15.2 10" />
+    </svg>
+  );
+}
+
 export function ListIcon({ className = "" }: { className?: string }) {
   return (
     <svg {...baseProps(className)}>

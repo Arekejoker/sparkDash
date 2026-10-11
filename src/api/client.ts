@@ -1,4 +1,11 @@
 import type {
+  VulnHuntJob,
+  VulnHuntReportBundle,
+  VulnHuntRun,
+  VulnHuntScanRequest,
+  VulnHuntSetup,
+  VulnHuntStatus,
+  VulnHuntStreamRead,
   ActivityEvent,
   ActivityEventsPage,
   EnergyHistory,
@@ -33,6 +40,7 @@ import type {
   QualityBenchListResponse,
   StartQualityBenchRequest,
 } from "./types";
+import { VulnHuntApiError } from "./types";
 import { authHeaders, reportAuthRequired } from "./authToken";
 
 const BASE = "";
@@ -759,4 +767,76 @@ export interface GpuHistoryResponse {
 
 export function getGpuHistory(sparkId: string, windowMs: number): Promise<GpuHistoryResponse> {
   return apiFetch<GpuHistoryResponse>(`/api/sparks/${encodeURIComponent(sparkId)}/gpu-history?windowMs=${Math.round(windowMs)}`);
+}
+
+// ─── Security scans (VulnHunter) ─────────────────────────
+const vhBase = (sparkId: string) => `/api/sparks/${encodeURIComponent(sparkId)}/vulnhunt`;
+const vhRun = (sparkId: string, runId: string) => `${vhBase(sparkId)}/runs/${encodeURIComponent(runId)}`;
+
+/** Like apiFetch, but keeps the status code, a busy job (409) and the `canForce` flag of a failed response. */
+async function vhFetch<T>(path: string, opts?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (opts?.body) headers["Content-Type"] = "application/json";
+  const res = await fetch(`${BASE}${path}`, { ...opts, headers: { ...headers, ...authHeaders() } });
+  if (!res.ok) {
+    if (res.status === 401) reportAuthRequired();
+    const body = await res.json().catch(() => ({}) as Record<string, unknown>);
+    const active = body.active && typeof body.active === "object" ? (body.active as Partial<VulnHuntJob>) : null;
+    throw new VulnHuntApiError(
+      (typeof body.error === "string" && body.error) || res.statusText || `HTTP ${res.status}`,
+      res.status,
+      active,
+      body.canForce === true
+    );
+  }
+  return res.json();
+}
+
+export function fetchVulnHuntSetup(): Promise<VulnHuntSetup> {
+  return vhFetch("/api/vulnhunt/setup");
+}
+
+export function fetchVulnHuntStatus(sparkId: string): Promise<VulnHuntStatus> {
+  return vhFetch(`${vhBase(sparkId)}/status`);
+}
+
+export function listVulnHuntRuns(sparkId: string): Promise<{ runs: VulnHuntRun[]; active: VulnHuntJob | null }> {
+  return vhFetch(`${vhBase(sparkId)}/runs`);
+}
+
+export function startVulnHuntScan(sparkId: string, req: VulnHuntScanRequest): Promise<{ run: VulnHuntRun; job: VulnHuntJob }> {
+  return vhFetch(`${vhBase(sparkId)}/runs`, { method: "POST", body: JSON.stringify(req) });
+}
+
+export function readVulnHuntStream(sparkId: string, runId: string, lineSince = 0): Promise<VulnHuntStreamRead> {
+  return vhFetch(`${vhRun(sparkId, runId)}/stream?lineSince=${lineSince}`);
+}
+
+export function fetchVulnHuntReport(sparkId: string, runId: string): Promise<{ run: VulnHuntRun | null; report: VulnHuntReportBundle }> {
+  return vhFetch(`${vhRun(sparkId, runId)}/report`);
+}
+
+export function attachVulnHuntScan(sparkId: string, runId: string): Promise<{ job: VulnHuntJob }> {
+  return vhFetch(`${vhRun(sparkId, runId)}/attach`, { method: "POST", body: "{}" });
+}
+
+export function stopVulnHuntScan(sparkId: string, runId: string): Promise<{ success: boolean; output?: string }> {
+  return vhFetch(`${vhRun(sparkId, runId)}/stop`, { method: "POST", body: "{}" });
+}
+
+export function refreshVulnHuntScan(
+  sparkId: string,
+  runId: string
+): Promise<{ state: { state: "running" | "gone" | "finished" | "unknown"; exitCode?: number }; run: VulnHuntRun | null }> {
+  return vhFetch(`${vhRun(sparkId, runId)}/refresh`, { method: "POST", body: "{}" });
+}
+
+/** `force` deletes a scan whose state the server could not confirm (after a 409 with `canForce`). */
+export function deleteVulnHuntScan(sparkId: string, runId: string, force = false): Promise<{ success: boolean }> {
+  return vhFetch(`${vhRun(sparkId, runId)}${force ? "?force=1" : ""}`, { method: "DELETE" });
+}
+
+/** Stop watching the live job; a scan keeps going on the unit. */
+export function cancelVulnHuntWatch(sparkId: string): Promise<{ success: boolean }> {
+  return vhFetch(`${vhBase(sparkId)}/watch`, { method: "DELETE" });
 }

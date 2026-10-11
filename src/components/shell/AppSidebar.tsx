@@ -18,9 +18,9 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { AuthMode, SparkSnapshot } from "../../api/types";
-import { ACTIVITY_ID, ENERGY_ID, OVERVIEW_ID, SHOWCASE_ID, TOKENS_ID, benchId, idToPath } from "../../constants";
+import { ACTIVITY_ID, ENERGY_ID, OVERVIEW_ID, SECURITY_ID, SHOWCASE_ID, TOKENS_ID, benchId, idToPath } from "../../constants";
 import { BENCH_TYPES } from "../bench/benchCatalog";
-import { BoltIcon, ChevronDownIcon, GearIcon, GithubIcon, GlobeIcon, GridIcon, ListIcon, PanelLeftIcon, PlusIcon, SearchIcon, TerminalIcon, TokensIcon, XLogoIcon } from "../ui/icons";
+import { BoltIcon, ChevronDownIcon, GearIcon, GithubIcon, GlobeIcon, GridIcon, ListIcon, PanelLeftIcon, PlusIcon, SearchIcon, ShieldIcon, TerminalIcon, TokensIcon, XLogoIcon } from "../ui/icons";
 import { OpenAccessChip } from "../OpenAccessChip";
 import { ThemeSwitch } from "../ThemeSwitch";
 import { isThrottling, railSubLabel } from "./sparkSummary";
@@ -331,6 +331,15 @@ export function AppSidebar({
           >
             <ListIcon className="h-4 w-4" />
             <span className="rail-item__name">Activity</span>
+          </a>
+          <a
+            href={idToPath(SECURITY_ID)}
+            className={`rail-item ${activeId === SECURITY_ID ? "is-active" : ""}`}
+            onClick={inApp(() => onSelect(SECURITY_ID))}
+            aria-current={activeId === SECURITY_ID ? "page" : undefined}
+          >
+            <ShieldIcon className="h-4 w-4" />
+            <span className="rail-item__name">Security</span>
           </a>
           <a
             href={idToPath(SHOWCASE_ID)}

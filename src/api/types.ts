@@ -1574,3 +1574,162 @@ export class ToolEvalApiError extends Error {
     this.active = active;
   }
 }
+
+// ─── Security scans (VulnHunter on a unit) ────────────────
+
+export type VulnHuntSeverity = "High+" | "High" | "Medium" | "Low" | "Informational";
+export type VulnHuntRunStatus = "running" | "completed" | "failed" | "stopped" | "detached" | "gone";
+
+export interface VulnHuntSetup {
+  repository: string;
+  /** Where the unit's user keeps the harness command (a path, never its contents). */
+  hostCommandFile: string;
+  steps: string[];
+  limits: { defaultTimeoutMinutes: number; minTimeoutMinutes: number; maxTimeoutMinutes: number };
+}
+
+export interface VulnHuntStatus {
+  reachable: boolean;
+  installed: boolean;
+  path: string | null;
+  git: boolean;
+  timeout: boolean;
+  hostCommand: {
+    source: "env" | "file" | "none" | "unsafe";
+    program: string | null;
+    found: boolean;
+    file: string | null;
+    configured: boolean;
+  };
+  ready: boolean;
+  runRoot: string | null;
+  error: string | null;
+}
+
+export interface VulnHuntJob {
+  id: string;
+  sparkId: string;
+  kind: "run" | "attach";
+  type: string;
+  status: "running" | "completed" | "failed" | "stopped" | "detached" | "cancelled";
+  exitCode: number | null;
+  startedAt: number;
+  finishedAt: number | null;
+  error: string | null;
+  stage: string | null;
+}
+
+export interface VulnHuntReportHeader {
+  runId: string | null;
+  repository: string | null;
+  auditDate: string | null;
+  branch: string | null;
+  model: string | null;
+  findingsSummary: string | null;
+}
+
+export interface VulnHuntManifest {
+  scanId: string | null;
+  agentExitCode: number | null;
+  costUsd: number | null;
+}
+
+export interface VulnHuntCounts {
+  "High+": number;
+  High: number;
+  Medium: number;
+  Low: number;
+  Informational: number;
+  unrated: number;
+}
+
+export interface VulnHuntRun {
+  id: string;
+  sparkId: string;
+  status: VulnHuntRunStatus;
+  startedAt: number;
+  finishedAt: number | null;
+  exitCode: number | null;
+  note: string | null;
+  label: string;
+  source: { type: "url" | "path"; value: string };
+  readOnly: boolean;
+  timeoutMinutes: number;
+  command: string;
+  runDir: string;
+  resultCached: boolean;
+  summary: null | {
+    hasReport: boolean;
+    header: VulnHuntReportHeader | null;
+    manifest: VulnHuntManifest | null;
+    total: number;
+    counts: VulnHuntCounts;
+    exploitPass: number;
+    artifactCount: number;
+    resultsDir: string | null;
+  };
+}
+
+export interface VulnHuntFinding {
+  id: string;
+  title: string;
+  cwe: string | null;
+  severity: VulnHuntSeverity | null;
+  runtime: string | null;
+  exploitTest: string | null;
+  measuredImpact: string | null;
+  status: string | null;
+}
+
+export interface VulnHuntReportBundle {
+  dir: string;
+  /** Markdown written by the scanning agent: untrusted, show as plain text only. */
+  report: string;
+  findings: VulnHuntFinding[];
+  artifacts: string[];
+  header: VulnHuntReportHeader;
+  manifest: VulnHuntManifest | null;
+}
+
+export interface VulnHuntLine {
+  seq: number;
+  text: string;
+  stream: "out" | "err";
+}
+
+export interface VulnHuntStreamRead {
+  run: VulnHuntRun | null;
+  live: null | {
+    job: VulnHuntJob;
+    lines: VulnHuntLine[];
+    events: unknown[];
+    partial: string;
+    progress: { stage: "starting" | "clone" | "hunt" | "collect" | "done" };
+    nextLine: number;
+    nextEvent: number;
+  };
+}
+
+export interface VulnHuntScanRequest {
+  source: { type: "url" | "path"; value: string };
+  readOnly: boolean;
+  /** Only sent when the scan may execute code on the unit. */
+  confirmExecute?: boolean;
+  authorized: true;
+  timeoutMinutes?: number;
+  label?: string;
+}
+
+/** Error of the security-scan client: keeps the status, the busy job (409) and the delete `canForce` flag. */
+export class VulnHuntApiError extends Error {
+  status: number;
+  active: Partial<VulnHuntJob> | null;
+  canForce: boolean;
+  constructor(message: string, status: number, active: Partial<VulnHuntJob> | null = null, canForce = false) {
+    super(message);
+    this.name = "VulnHuntApiError";
+    this.status = status;
+    this.active = active;
+    this.canForce = canForce;
+  }
+}
