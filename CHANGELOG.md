@@ -9,6 +9,10 @@ Format: version sections are listed newest first.
 
 ## [Unreleased]
 
+---
+
+## [2.40.0] — 2026-10-11
+
 ### Added
 - **LM Studio and Ollama are detected by their own endpoints** (`/api/v0/models`, `/api/tags`), so a server that answers 200 + JSON on every path (LM Studio) is no longer labelled SGLang or vLLM, and an identified backend is never downgraded. `/metrics` is no longer fetched from engines that never serve it. LLM panels are matched to their port instead of their position in the list, and the Add wizard, the "+ Add LLM port" panel and each LLM panel's settings have **LM Studio :1234 / Ollama :11434 / TensorFold :8888** presets that only fill in a port. From a contribution by @HassanEmam (#191).
 - **Windows units with an AMD iGPU (Strix Halo)** show GPU utilisation and memory from Windows' GPU performance counters when `nvidia-smi` is not installed (an NVIDIA PC whose `nvidia-smi` fails still reports the failure). Model launchers now say plainly that they are not supported on Windows. From #191.

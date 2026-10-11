@@ -64,6 +64,11 @@ Monitored units run **Linux**, **macOS**, or **Windows** (a Windows PC with an N
 
 ## Latest version changelog
 
+### Version 2.40.0
+- **Hide any Overview panel**: Settings has switches for Recent activity and for each of the four tiles (Fleet decode, Fleet power, Memory in use, Tokens today), next to Fleet energy and LLM token totals.
+- **LM Studio and Ollama** are detected by their own endpoints, so they are no longer labelled SGLang or vLLM; LLM panels match their port, and the Add wizard and LLM panels have LM Studio / Ollama / TensorFold port presets.
+- **Windows PCs with an AMD iGPU (Strix Halo)** show GPU use and memory from Windows' GPU counters. Windows setup docs now cover the `administrators_authorized_keys` gotcha.
+
 ### Version 2.32.0
 - **LLM panel**: an engine that only SSH can reach (a remote unit behind a NAT that forwards just SSH) is now monitored through an SSH forward, with a **via SSH** chip; TensorFold prefill tok/s counts only computed tokens, so prefix-cache hits no longer read as 100k+.
 - **Decode benchmark**: live generation tok/s is measured from the run's own streams, so it no longer shows 0.
