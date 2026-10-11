@@ -9,6 +9,9 @@ Format: version sections are listed newest first.
 
 ## [Unreleased]
 
+### Fixed
+- **Disk read/write speed on remote units.** Only the unit sparkDash runs on measured it; every Linux unit reached over SSH and every Windows PC showed 0 B/s forever. Remote Linux units now read the block-device counters in the same SSH round trip as the disk usage, and Windows PCs read the per-drive performance counters, so the Storage panel shows live read and write speed (macOS units still show none). Two mounts on one physical disk no longer make the second read 0. Reported by a user ("disk I/O is not being reflected in real-time").
+
 ---
 
 ## [2.40.0] — 2026-10-11
