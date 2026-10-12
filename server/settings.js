@@ -73,6 +73,12 @@ const DEFAULTS = Object.freeze({
    * The GPU chart (8 h) and Temps (7 d) histories are separate and always on.
    */
   metricsHistory: false,
+
+  /**
+   * Alert notifications (Settings → Alerts). Off by default: while off nothing
+   * is evaluated or sent, and the alert config / test routes refuse.
+   */
+  alertsEnabled: false,
 });
 
 const POLL_INTERVAL_MIN_MS = 500;
@@ -142,6 +148,7 @@ function _clampSettings(settings) {
   s.vulnhuntEnabled = Boolean(s.vulnhuntEnabled);
   s.reaEnabled = Boolean(s.reaEnabled);
   s.metricsHistory = Boolean(s.metricsHistory);
+  s.alertsEnabled = Boolean(s.alertsEnabled);
   // Ensure temperatureUnit is valid
   if (s.temperatureUnit !== "celsius" && s.temperatureUnit !== "fahrenheit") {
     s.temperatureUnit = DEFAULTS.temperatureUnit;
