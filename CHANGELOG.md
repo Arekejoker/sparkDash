@@ -13,6 +13,7 @@ Format: version sections are listed newest first.
 - **Models panel: "Run both".** Starting a model while another launcher on the same unit is running now offers **Run both** next to **Stop it, then start**, so two models can share a unit without starting the second by hand. The start script can still refuse if memory is short. Thanks @ZackSample (#195).
 
 ### Fixed
+- **LLM panel no longer says "Idle · last served Xm ago" while a prompt is prefilling.** On TensorFold, which publishes token counters only when a request finishes, both rates read 0 during a prefill, so the Decode tile showed "Idle" next to the Prefill tile's "prefilling". The idle note is now hidden while a prefill is in flight. Reported by @solodddd (#202).
 - **Disk read/write speed on remote units.** Only the unit sparkDash runs on measured it; every Linux unit reached over SSH and every Windows PC showed 0 B/s forever. Remote Linux units now read the block-device counters in the same SSH round trip as the disk usage, and Windows PCs read the per-drive performance counters, so the Storage panel shows live read and write speed (macOS units still show none). Two mounts on one physical disk no longer make the second read 0. Reported by a user ("disk I/O is not being reflected in real-time").
 
 ---

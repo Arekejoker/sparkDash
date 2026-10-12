@@ -429,7 +429,7 @@ export function LlmPanel({
   const uncachedPrefillTps = llm?.uncachedPrefillTps ?? 0;
   const available = llm?.available ?? false;
   // While nothing is flowing, say when the endpoint last served.
-  const idleNote = available && isLlmIdle({ generationTps, prefillTps })
+  const idleNote = available && isLlmIdle({ generationTps, prefillTps, prefillActive: llm?.prefillActive })
     ? idleLabel(llm?.lastActiveAt)
     : null;
 
