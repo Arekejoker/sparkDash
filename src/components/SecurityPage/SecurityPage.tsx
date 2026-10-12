@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SparkSnapshot, VulnHuntRun } from "../../api/types";
 import { History } from "./History";
 import { LiveScan } from "./LiveScan";
-import { Notice } from "./parts";
+import { Notice, VulnHuntCredits } from "./parts";
 import { ReportPanel } from "./ReportView";
 import { ScanForm } from "./ScanForm";
 import { SetupCard } from "./SetupCard";
 import { updateSettings } from "../../api/client";
 import { useVulnHuntReport, useVulnHuntRunner, useVulnHuntSetup, useVulnHuntStatus } from "./hooks";
-import { FALLBACK_LIMITS, isLive } from "./securityLogic";
+import { FALLBACK_LIMITS, activeHarness, isLive, recentSources } from "./securityLogic";
 import "../../styles/security.css";
 
 /** Everything for one unit. Keyed by unit id, so switching units starts from a clean slate. */
@@ -16,22 +16,27 @@ function Workspace({ spark }: { spark: SparkSnapshot }) {
   const { setup, error: setupError, reload: reloadSetup } = useVulnHuntSetup();
   const [enabling, setEnabling] = useState(false);
   const [enableError, setEnableError] = useState<string | null>(null);
+  /** Turn the opt-in on and ask the server again. Rejects when the setting could not be saved. */
+  const turnOn = useCallback(async () => {
+    await updateSettings({ vulnhuntEnabled: true });
+    reloadSetup();
+  }, [reloadSetup]);
   const enable = useCallback(async () => {
     setEnabling(true);
     setEnableError(null);
     try {
-      await updateSettings({ vulnhuntEnabled: true });
-      reloadSetup();
+      await turnOn();
     } catch (e) {
       setEnableError(e instanceof Error ? e.message : String(e));
     } finally {
       setEnabling(false);
     }
-  }, [reloadSetup]);
+  }, [turnOn]);
   const status = useVulnHuntStatus(spark.id);
   const [viewedId, setViewedId] = useState<string | null>(null);
   const [reportVersion, setReportVersion] = useState(0);
   const reportRef = useRef<HTMLDivElement>(null);
+  const [prefill, setPrefill] = useState<{ value: string; nonce: number } | null>(null);
 
   const onSettled = useCallback((run: VulnHuntRun) => {
     // A finished scan opens its report straight away (the server captures it on demand).
@@ -61,6 +66,11 @@ function Workspace({ spark }: { spark: SparkSnapshot }) {
       : anyLive
         ? "A scan is already running on this unit. Wait for it to finish, or stop it."
         : null;
+
+  const recent = useMemo(() => recentSources(runner.runs), [runner.runs]);
+  // Only a harness preset the dashboard installed can claim to enforce read-only.
+  const harness = activeHarness(status.status);
+  const enforcedBy = harness?.roEnforced ? harness.label : null;
 
   const openReport = (run: VulnHuntRun) => {
     setViewedId(run.id);
@@ -94,6 +104,7 @@ function Workspace({ spark }: { spark: SparkSnapshot }) {
         loading={status.loading}
         error={status.error}
         onRecheck={() => void status.reload()}
+        onEnableOptIn={turnOn}
       />
 
       <ScanForm
@@ -103,6 +114,9 @@ function Workspace({ spark }: { spark: SparkSnapshot }) {
         error={runner.startError}
         onStart={runner.start}
         onDismissError={runner.clearStartError}
+        recent={recent}
+        prefill={prefill}
+        enforcedBy={enforcedBy}
       />
 
       {runner.actionError ? (
@@ -145,6 +159,7 @@ function Workspace({ spark }: { spark: SparkSnapshot }) {
         viewedId={viewedId}
         onReload={() => void runner.reloadRuns()}
         onOpen={openReport}
+        onScanAgain={(r) => setPrefill((p) => ({ value: r.source.value, nonce: (p?.nonce ?? 0) + 1 }))}
         onWatch={(r) => void runner.attach(r)}
         onRefresh={(r) => void runner.refresh(r)}
         onDelete={async (r, force) => {
@@ -159,23 +174,21 @@ function Workspace({ spark }: { spark: SparkSnapshot }) {
 
 /** The VulnHunter benchmark page body: setup, scan form, live output, history and parsed reports for one unit. */
 export function VulnHuntBenchPage({ spark }: { spark: SparkSnapshot | null }) {
-  if (!spark) {
-    return (
-      <Notice tone="info" title="No unit to scan on">
-        Scans run on a Linux unit (a DGX Spark or a GPU host). Add one first.
-      </Notice>
-    );
-  }
-  if (spark.platform === "windows" || spark.platform === "darwin") {
-    return (
-      <Notice tone="info" title={`${spark.name} cannot run scans`}>
-        VulnHunter scans run on Linux units. Pick another unit above.
-      </Notice>
-    );
-  }
+  const unsupported = spark != null && (spark.platform === "windows" || spark.platform === "darwin");
   return (
     <div className="sec">
-      <Workspace key={spark.id} spark={spark} />
+      {!spark ? (
+        <Notice tone="info" title="No unit to scan on">
+          Scans run on a Linux unit (a DGX Spark or a GPU host). Add one first.
+        </Notice>
+      ) : unsupported ? (
+        <Notice tone="info" title={`${spark.name} cannot run scans`}>
+          VulnHunter scans run on Linux units. Pick another unit above.
+        </Notice>
+      ) : (
+        <Workspace key={spark.id} spark={spark} />
+      )}
+      <VulnHuntCredits />
     </div>
   );
 }

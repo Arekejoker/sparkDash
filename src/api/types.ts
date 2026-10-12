@@ -1629,12 +1629,27 @@ export interface VulnHuntInstallInfo {
   python311: string | null;
   /** Absolute paths of harness skills directories that exist on the unit. */
   skillsDirCandidates: string[];
+  /** The agent harnesses the one-click setup knows, and what the unit has of each. */
+  harnesses: VulnHuntHarness[];
 }
 
-export interface VulnHuntInstallRequest {
+export type VulnHuntHarnessId = "claude" | "codex" | "opencode";
+
+export interface VulnHuntHarness {
+  id: VulnHuntHarnessId;
+  label: string;
+  /** Its CLI exists on the unit. */
+  found: boolean;
+  /** The dashboard's wrapper script for this harness is installed on the unit. */
+  wrapperInstalled: boolean;
   skillsDir: string;
-  agentsDir?: string;
+  /** The preset starts the agent with tool restrictions that enforce a read-only scan. */
+  roEnforced: boolean;
+  note: string;
 }
+
+/** Either the one-click variant (a harness id) or the manual one (explicit directories). */
+export type VulnHuntInstallRequest = { harness: VulnHuntHarnessId } | { skillsDir: string; agentsDir?: string };
 
 export interface VulnHuntInstallJob {
   id: string;
