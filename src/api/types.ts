@@ -1897,8 +1897,18 @@ export interface ReaDoctorCheck {
 
 export interface ReaStatus {
   reachable: boolean;
-  node: { path: string | null; version: string | null; ok: boolean };
+  node: {
+    path: string | null;
+    version: string | null;
+    ok: boolean;
+    /** The install can fetch the pinned official Node.js into the user's home when none is usable. */
+    installable?: boolean;
+    installReason?: string | null;
+    installVersion?: string | null;
+  };
   npm: boolean;
+  /** python3 is on the unit (needed only to unpack archive uploads). */
+  python3?: boolean;
   installed: boolean;
   version: string | null;
   pinnedVersion: string;
