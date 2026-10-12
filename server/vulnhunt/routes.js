@@ -18,7 +18,7 @@ export const SETUP = {
   steps: [
     "git clone https://github.com/nealbridges/VulnHunter.git ~/VulnHunter && cd ~/VulnHunter",
     'VULNHUNT_SKILLS_DIR="<your harness skills dir>" VULNHUNT_AGENTS_DIR="<your harness agents dir>" ./install.sh',
-    "mkdir -p ~/.config/sparkdash && printf '%s\\n' '<your harness headless one-shot command>' > ~/.config/sparkdash/vulnhunt-host-cmd && chmod 600 ~/.config/sparkdash/vulnhunt-host-cmd",
+    "mkdir -p ~/.config/sparkdash && (umask 077; printf '%s\\n' '<your harness headless one-shot command>' > ~/.config/sparkdash/vulnhunt-host-cmd)",
   ],
 };
 
@@ -40,7 +40,7 @@ export const SETUP = {
 export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun, principalKey, rejectLimited, bindHost = process.env.BIND_HOST || "127.0.0.1" }) {
   const base = "/api/sparks/:id/vulnhunt";
 
-  /** Starting scans needs an authenticated dashboard (a token) or one only this machine can reach. */
+  /** Starting scans needs a token, or a dashboard only this machine can reach (which trusts its local users). */
   const startGate = () =>
     configuredToken() || isLoopbackBind(bindHost)
       ? null

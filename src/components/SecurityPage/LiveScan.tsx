@@ -37,7 +37,8 @@ export function LiveScan({ followed, polling, pollError, onStop, onStopWatching,
   const { run, job, lines, partial, stage, noLive } = followed;
   const live = isLive(run);
   const watching = live && polling;
-  const now = useNow(watching);
+  // Elapsed time keeps counting while the scan is live, watched or not.
+  const now = useNow(live);
   const [confirmStop, setConfirmStop] = useState(false);
   const [stopping, setStopping] = useState(false);
   useEffect(() => {

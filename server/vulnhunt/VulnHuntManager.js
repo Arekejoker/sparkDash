@@ -191,6 +191,8 @@ export class VulnHuntManager extends ToolEvalManager {
     // Nothing is known yet: the scan may still be running (watcher closed, connection lost, dashboard
     // shutting down). The record and Activity stay as they are; checkRun() settles it later.
     if (job.status === "detached" || job.status === "cancelled") return;
+    // Re-opening the output of a scan that was already settled must not settle it a second time.
+    if (job.kind === "attach" && ["completed", "failed", "stopped", "gone"].includes(run.status)) return;
     const code = job.exitCode;
     const finalStatus =
       job.status === "stopped" || code === 143

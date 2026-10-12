@@ -54,7 +54,7 @@ function ipv6Groups(host) {
  */
 export function isBlockedCloneHost(host) {
   const h = String(host || "").toLowerCase().replace(/\.$/, "");
-  if (!h || METADATA_NAMES.has(h) || h.endsWith(".internal")) return true;
+  if (!h || METADATA_NAMES.has(h)) return true;
   if (!isAllowedTargetHost(h)) return true;
   const family = net.isIP(h);
   if (family === 4) return blockedV4(h);
@@ -76,6 +76,8 @@ export function parseAllowedHosts(value) {
   return String(value ?? "")
     .split(",")
     .map((h) => h.trim().toLowerCase())
+    // Host names only: a trailing :port is dropped (a bare IPv6 literal has several colons and is kept).
+    .map((h) => (/^[^:]+:\d{1,5}$/.test(h) ? h.replace(/:\d{1,5}$/, "") : h))
     .filter((h) => /^(\*\.)?[a-z0-9.:\[\]-]{1,253}$/.test(h));
 }
 

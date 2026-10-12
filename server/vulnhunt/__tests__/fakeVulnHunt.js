@@ -26,6 +26,7 @@ case "$1" in
     [ $found = 0 ] || echo "no *_VULNHUNT_RESULTS_* directory under $2" >&2
     exit $found ;;
   write-manifest)
+    [ -f "$HOME/slow-manifest" ] && sleep 4
     printf '{"schema_version":"1","scan_id":"%s","agent_exit_code":%s,"cost_usd":0,"findings":[],"posted":[],"skipped":[],"failed":[]}\\n' "$(basename "$2")" "\${4:-0}" > "$2/scan_manifest.json"
     echo "$2/scan_manifest.json"; exit 0 ;;
   validate-manifest) echo "ok $2"; exit 0 ;;

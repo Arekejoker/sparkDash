@@ -54,7 +54,15 @@ async function startServer(t, extraEnv = {}) {
   });
   t.after(async () => {
     child.kill("SIGTERM");
-    await new Promise((resolve) => (child.exitCode != null ? resolve() : child.once("exit", resolve)));
+    // Bounded: a server stuck in its graceful shutdown must not hang the whole suite.
+    await new Promise((resolve) => {
+      if (child.exitCode != null || child.signalCode != null) return resolve();
+      const hard = setTimeout(() => child.kill("SIGKILL"), 5_000);
+      child.once("exit", () => {
+        clearTimeout(hard);
+        resolve();
+      });
+    });
     fs.rmSync(tmp, { recursive: true, force: true });
   });
   let output = "";
@@ -71,7 +79,9 @@ async function startServer(t, extraEnv = {}) {
 }
 
 async function api(port, pathname, init) {
+  // Bounded: an unanswered request must fail this test, not hang the suite.
   const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
+    signal: AbortSignal.timeout(45_000),
     ...init,
     headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
   });

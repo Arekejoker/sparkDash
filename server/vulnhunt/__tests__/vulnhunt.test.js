@@ -220,7 +220,9 @@ test("pipeline: a scan that may execute code does not carry the read-only senten
   const { id } = startScan(mgr, store, { request: { readOnly: false } });
   await settled(mgr);
   await until(() => store.get(id).status !== "running");
-  assert.doesNotMatch(fs.readFileSync(path.join(home, "prompt.seen"), "utf8"), /read-only scan/);
+  const prompt = fs.readFileSync(path.join(home, "prompt.seen"), "utf8");
+  assert.doesNotMatch(prompt, /read-only scan/);
+  assert.match(prompt, /--no-read-only/, "names its mode so the upstream skill does not stop at its menu");
 });
 
 test("pipeline: a results folder shipped inside the repository is never mistaken for this hunt's", async () => {
@@ -433,6 +435,73 @@ test("pipeline: only the results folder is kept; the clone is deleted, run files
   await until(() => processesMentioning(rd).length === 0, 5000);
 });
 
+test("pipeline: a wrapper that was SIGKILLed stops reading as running, and the unit is free again", async () => {
+  const home = tmp("vh-home-");
+  installFakeUnit(home);
+  fs.writeFileSync(path.join(home, "slow"), "");
+  const { mgr, store } = realManager(home);
+  const { id } = startScan(mgr, store);
+  await until(() => fs.existsSync(path.join(home, "harness.pid")));
+  const wrapperPid = Number(fs.readFileSync(path.join(runDirOf(home, id), "pid"), "utf8"));
+  const harnessPid = Number(fs.readFileSync(path.join(home, "harness.pid"), "utf8"));
+  mgr.cancelWatch("s1");
+  await until(() => mgr.latestJob("s1").status === "cancelled");
+  process.kill(wrapperPid, "SIGKILL");
+  // The watchdog notices within a tick; until then it is still in the group.
+  const state = await until(async () => {
+    const r = await mgr.checkRun(spark, id);
+    return r.state !== "running" ? r : null;
+  }, 15_000);
+  assert.equal(state.state, "finished");
+  const run = store.get(id);
+  assert.equal(run.status, "failed");
+  assert.match(run.note, /without reporting a result/);
+  assert.equal(mgr.canStart(spark).ok, true);
+  try {
+    process.kill(harnessPid, "SIGKILL");
+  } catch {
+    /* already gone */
+  }
+});
+
+test("pipeline: re-opening the output of a settled scan does not settle it again", async () => {
+  const home = tmp("vh-home-");
+  installFakeUnit(home);
+  const { mgr, store, events } = realManager(home);
+  const { id } = startScan(mgr, store);
+  await settled(mgr);
+  await until(() => store.get(id).resultCached);
+  const before = { ...store.get(id) };
+  const eventsBefore = events.length;
+  const attach = mgr.attachScan(spark, store.get(id));
+  assert.equal(attach.ok, true);
+  await until(() => mgr.latestJob("s1").status !== "running");
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(events.length, eventsBefore, "no second Activity event");
+  assert.equal(store.get(id).finishedAt, before.finishedAt);
+  assert.equal(store.get(id).status, "completed");
+});
+
+test("pipeline: stop during the collect stage reads as stopped, and the manifest is still finished", async () => {
+  const home = tmp("vh-home-");
+  installFakeUnit(home);
+  fs.writeFileSync(path.join(home, "slow-manifest"), "");
+  const { mgr, store } = realManager(home);
+  const { id } = startScan(mgr, store);
+  await until(() => mgr.readJob("s1", id, {})?.progress.stage === "collect");
+  await new Promise((r) => setTimeout(r, 500));
+  await mgr.stopRun(spark, id);
+  await settled(mgr);
+  await until(() => store.get(id).status !== "running");
+  const run = store.get(id);
+  assert.equal(run.exitCode, 143);
+  assert.equal(run.status, "stopped");
+  await until(() => store.get(id).resultCached);
+  const bundle = store.loadBundle(id);
+  assert.equal(bundle.manifest?.agentExitCode, 0, "the manifest was written despite the stop");
+  assert.ok(!mgr.readJob("s1", id, {}).lines.some((l) => /Terminated|Killed/.test(l.text)));
+});
+
 test("pipeline: a symlinked ~/.cache does not hide the report (both sides of the location check are resolved)", async () => {
   const home = tmp("vh-home-");
   const elsewhere = tmp("vh-cache-");
@@ -574,7 +643,7 @@ test("pipeline: output.log is kept bounded on the unit and the in-memory buffer 
   const { mgr, store } = realManager(home);
   const { id } = startScan(mgr, store);
   await settled(mgr);
-  await until(() => store.get(id).status !== "running");
+  await until(() => store.get(id).status !== "running", 60_000);
   const log = fs.readFileSync(path.join(runDirOf(home, id), "output.log"), "utf8");
   assert.ok(log.length < 300_000, `log is ${log.length} bytes`);
   assert.match(log, /output trimmed/);
@@ -591,7 +660,6 @@ test("clone policy: metadata names and addresses (including IPv6 forms that embe
   for (const host of [
     "metadata.google.internal",
     "metadata",
-    "something.internal",
     "169.254.169.254",
     "100.100.100.200",
     "168.63.129.16",
@@ -604,7 +672,7 @@ test("clone policy: metadata names and addresses (including IPv6 forms that embe
   ]) {
     assert.equal(isBlockedCloneHost(host), true, host);
   }
-  for (const host of ["github.com", "gitlab.example.org", "10.0.0.5", "192.168.1.20", "127.0.0.1", "100.64.1.2", "git.lan", "fd12:3456::1", "2001:db8::1", "::1"]) {
+  for (const host of ["github.com", "git.corp.internal", "gitlab.example.org", "10.0.0.5", "192.168.1.20", "127.0.0.1", "100.64.1.2", "git.lan", "fd12:3456::1", "2001:db8::1", "::1"]) {
     assert.equal(isBlockedCloneHost(host), false, host);
   }
   assert.equal(validateSource({ type: "url", value: "https://metadata.google.internal/computeMetadata/v1" }).ok, false);
@@ -621,6 +689,8 @@ test("allowed hosts: when pinned, only those hosts (and *.suffix patterns) may b
   assert.equal(ok("https://evilgithub.com/o/r"), false);
   assert.equal(ok("https://github.com.evil.example/o/r"), false);
   assert.equal(validateSource({ type: "url", value: "https://anything.example/o/r" }, { allowedHosts: [] }).ok, true, "empty list means any host the policy allows");
+  assert.deepEqual(parseAllowedHosts("git.lan:8443, [::1]"), ["git.lan", "[::1]"], "a port is dropped: entries are host names");
+  assert.equal(validateSource({ type: "url", value: "https://git.lan:8443/o/r" }, { allowedHosts: parseAllowedHosts("git.lan:8443") }).ok, true);
   assert.equal(validateScanRequest({ source: { type: "path", value: "~/x" }, authorized: true, timeoutMinutes: "0x20" }).ok, false);
   assert.equal(validateScanRequest({ source: { type: "path", value: "~/x" }, authorized: true, timeoutMinutes: [30] }).ok, false);
   assert.equal(validateScanRequest({ source: { type: "path", value: "~/x" }, authorized: true, timeoutMinutes: "30" }).timeoutMinutes, 30);

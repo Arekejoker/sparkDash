@@ -83,7 +83,9 @@ ours() {
   [ "$c" = "$(tr '\\0' ' ' 2>/dev/null < "/proc/$$/cmdline")" ] && return 0
   return 1
 }
-alive() { [ "$PID" != 0 ] || return 1; [ -f "$X" ] && return 1; { kill -0 "$PID" 2>/dev/null || kill -0 -- "-$PID" 2>/dev/null; } || return 1; ours; }
+# A leader that is gone is gone, even if a member of its group (the watchdog) is still around: a wrapper
+# that was SIGKILLed or OOM-killed must not read as running until the time limit.
+alive() { [ "$PID" != 0 ] || return 1; [ -f "$X" ] && return 1; if [ -d /proc/self ]; then [ -d "/proc/$PID" ] || return 1; fi; { kill -0 "$PID" 2>/dev/null || kill -0 -- "-$PID" 2>/dev/null; } || return 1; ours; }
 follow() {
   tail -n "$1" -F "$L" 2>/dev/null &
   T=$!
@@ -133,9 +135,13 @@ rm -rf "$RD/src" "$RD/results" "$RD/results-dir" "$RD/before.txt" "$RD/timeout" 
 # One time limit for the whole scan, clone included, plus a janitor that keeps output.log bounded.
 # GNU timeout is avoided on purpose: it moves its child into a new process group, which a stop
 # request (TERM to this session's group) cannot reach.
+INNER=$$
+# The wrapper is still this shell (not a recycled pid): its command line carries the run directory.
+wrapper_alive() { kill -0 "$INNER" 2>/dev/null && tr '\\0' ' ' 2>/dev/null < "/proc/$INNER/cmdline" | grep -qF -- "$RD"; }
 (
   end=$(( $(date +%s) + TMO ))
   while [ "$(date +%s)" -lt "$end" ]; do
+    wrapper_alive || exit 0
     left=$(( end - $(date +%s) )); [ "$left" -gt "$TICK" ] && left="$TICK"; [ "$left" -lt 1 ] && left=1
     sleep "$left"
     SZ=$(stat -c %s "$RD/output.log" 2>/dev/null || echo 0)
@@ -145,9 +151,10 @@ rm -rf "$RD/src" "$RD/results" "$RD/results-dir" "$RD/before.txt" "$RD/timeout" 
       echo "[sparkdash] output trimmed to the most recent part"
     fi
   done
+  wrapper_alive || exit 0
   : > "$RD/timeout"
   echo "[sparkdash] the scan hit its time limit"
-  kill -TERM -- "-$$" 2>/dev/null
+  kill -TERM -- "-$INNER" 2>/dev/null
 ) &
 WD=$!
 
@@ -177,7 +184,11 @@ vh find-results "$RD/src" > "$RD/before.txt" 2>/dev/null
 PF="$RD/prompt.txt"
 {
   printf '/vulnhunt %s\\n\\nIMPORTANT: This is running in non-interactive headless mode. Do NOT ask for approval or confirmation. Execute immediately.' "$RD/src"
-  [ "$RO" = 1 ] && printf '  Perform a read-only scan, skip instructions related to getting dependencies and executing code'
+  if [ "$RO" = 1 ]; then
+    printf '  Perform a read-only scan, skip instructions related to getting dependencies and executing code'
+  else
+    printf '  --no-read-only (bash is allowed: run the exploit tests and fetch dependencies where the methodology needs them)'
+  fi
   printf '\\n'
 } > "$PF"
 
@@ -216,7 +227,8 @@ while IFS= read -r d; do
 done < <(vh find-results "$RD/src" 2>/dev/null)
 if [ -n "$R" ]; then
   EC=0; [ "$HRC" -eq 0 ] || EC=1
-  vh write-manifest "$R" --exit-code "$EC" && vh validate-manifest "$R"
+  # A stop request during collect must not cut the manifest short: these children ignore TERM.
+  ( trap "" TERM INT; vh write-manifest "$R" --exit-code "$EC" && vh validate-manifest "$R" )
   NAME=$(basename -- "$R")
   if mv -- "$R" "$RD/results/$NAME"; then
     printf '%s\\n' "$RD/results/$NAME" > "$RD/results-dir"
@@ -228,6 +240,8 @@ else
 fi
 # The clone is not needed any more (the results folder was moved out of it).
 rm -rf "$RD/src"
+# Stopped on request, even if the stop arrived after the hunt itself had finished.
+if [ -n "$TERMED" ] && [ "$HRC" -eq 0 ]; then HRC=143; fi
 RC=$HRC
 if [ "$HRC" -eq 0 ] && [ -z "$R" ]; then RC=4; fi
 stage done
