@@ -13,7 +13,15 @@
  *
  * The scan sequence is the one VulnHunter's own operator skill and benchmark harness use:
  * `vh clone` -> `vh host <prompt>` (prompt = "/vulnhunt <checkout>") -> `vh find-results`
- * -> `vh write-manifest` -> `vh validate-manifest`.
+ * -> `vh write-manifest` -> `vh validate-manifest`. The clone is deleted afterwards; only the
+ * results folder is kept (under <run>/results).
+ *
+ * Exit codes written to <run>/exit by the wrapper (the harness's own code is never passed through):
+ *   0 hunt finished with a results folder      2 source not usable on the unit
+ *   3 clone failed                             4 hunt finished but produced no new results folder
+ *   10 the harness command exited non-zero     124 the scan hit its time limit
+ *   126 harness command not configured safely  127 VulnHunter / git / setsid not set up
+ *   143 stopped on request
  */
 
 import { exitToken } from "../tooleval/commands.js";
@@ -24,6 +32,14 @@ export const RUN_ROOT = "$HOME/.cache/sparkdash/vulnhunt";
 export const HOST_CMD_FILE = "$HOME/.config/sparkdash/vulnhunt-host-cmd";
 const PATH_LINE = 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"';
 
+/**
+ * Seconds the wrapper gives the harness to wind down after TERM before it is killed. Overridable
+ * through SPARKDASH_VULNHUNT_GRACE in the environment of the program (tests use a small value), like
+ * SPARKDASH_VULNHUNT_LOGMAX (bytes, default 64 MiB: output.log is trimmed to a quarter of it) and
+ * SPARKDASH_VULNHUNT_TICK (seconds between janitor checks, default 15).
+ */
+export const GRACE_SECONDS = 20;
+
 export function runDirRef(runId) {
   return `~/.cache/sparkdash/vulnhunt/${runId}`;
 }
@@ -33,22 +49,38 @@ function wrap(program) {
   return `bash -c "$(printf %s '${b64}' | base64 -d)"`;
 }
 
+/** The first token of a (shlex-quoted) command line, as `vh host` will split it. */
+const FIRST_TOKEN = `
+first_token() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import shlex, sys
+try:
+    t = shlex.split(sys.argv[1])
+    print(t[0] if t else "")
+except Exception:
+    print("")' "$1"
+  else
+    local f=\${1%% *}; printf '%s\\n' "\${f//\\"/}"
+  fi
+}
+`;
+
 const HELPERS = `
 # A pid only counts while the run has not written its exit file and the process still looks like our
-# wrapper (guards against a recycled pid being mistaken for, or signalled as, the run).
-# cmdline is empty for an instant while setsid execs (and for good once the process is a zombie), so retry briefly.
-# A pid only counts while it still looks like our wrapper: the run directory is in its arguments.
+# wrapper: the run directory is in its arguments (guards against a recycled pid being mistaken for,
+# or signalled as, the run). The command line is empty for an instant while setsid execs (and for good
+# once the process is a zombie), and between fork and exec it is still this shell's own, so retry
+# briefly and accept both. Errors from a vanished /proc entry are silenced.
 ours() {
   local c i
   [ -r "/proc/$PID/cmdline" ] || return 0
   for i in 1 2 3 4 5 6; do
-    c=$(tr '\\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null)
+    c=$(tr '\\0' ' ' 2>/dev/null < "/proc/$PID/cmdline")
     [ -n "$c" ] && break
     sleep 0.1
   done
   case "$c" in *"$RD"*) return 0;; esac
-  # Between fork and exec the new process still carries this shell's own command line.
-  [ "$c" = "$(tr '\\0' ' ' < "/proc/$$/cmdline" 2>/dev/null)" ] && return 0
+  [ "$c" = "$(tr '\\0' ' ' 2>/dev/null < "/proc/$$/cmdline")" ] && return 0
   return 1
 }
 alive() { [ "$PID" != 0 ] || return 1; [ -f "$X" ] && return 1; { kill -0 "$PID" 2>/dev/null || kill -0 -- "-$PID" 2>/dev/null; } || return 1; ours; }
@@ -64,6 +96,7 @@ follow() {
 
 function dirs(runId) {
   return `
+umask 077
 RD="${RUN_ROOT}/${runId}"
 mkdir -p "$RD" || exit 1
 L="$RD/output.log"; X="$RD/exit"; P="$RD/pid"
@@ -73,24 +106,70 @@ PID=$(cat "$P" 2>/dev/null || echo 0)
 
 /**
  * The detached part: clone, hunt, collect. Arguments: run dir, kind, source, read-only flag
- * ("1"/"0"), time limit in seconds. It always writes <run>/exit, whatever happens.
+ * ("1"/"0"), time limit in seconds (for the whole scan, clone included). It always writes
+ * <run>/exit, whatever happens, and it never lets the harness's exit code stand in for its own.
  */
 const INNER = `
+umask 077
 RD="$1"; KIND="$2"; VAL="$3"; RO="$4"; TMO="$5"
-X="$RD/exit"; P="$RD/pid"; RC=1
+X="$RD/exit"; P="$RD/pid"; RC=1; TERMED=""
+GRACE="\${SPARKDASH_VULNHUNT_GRACE:-${GRACE_SECONDS}}"
+LOGMAX="\${SPARKDASH_VULNHUNT_LOGMAX:-67108864}"; TICK="\${SPARKDASH_VULNHUNT_TICK:-15}"
 trap 'echo "$RC" > "$X"; rm -f "$P"' EXIT
 stage() { echo "[sparkdash] stage: $1"; }
-export GIT_TERMINAL_PROMPT=0
+# Every process of this session except this shell (the harness and anything it started).
+kill_rest() { local p; for p in $(ps -o pid= --sid "$$" 2>/dev/null); do [ "$p" = "$$" ] || kill -"$1" "$p" 2>/dev/null; done; }
+# A stop request or the time limit: stop at the next stage boundary with the right code.
+terminated() {
+  if [ -n "$TERMED" ]; then
+    if [ -f "$RD/timeout" ]; then RC=124; else RC=143; fi
+    exit "$RC"
+  fi
+}
+trap 'TERMED=1; trap "" TERM INT; kill -TERM -- "-$$" 2>/dev/null' TERM INT
 cd "$RD" || exit 1
-rm -rf "$RD/src" "$RD/results-dir" "$RD/before.txt"
+rm -rf "$RD/src" "$RD/results" "$RD/results-dir" "$RD/before.txt" "$RD/timeout" "$RD/output.trim"
+
+# One time limit for the whole scan, clone included, plus a janitor that keeps output.log bounded.
+# GNU timeout is avoided on purpose: it moves its child into a new process group, which a stop
+# request (TERM to this session's group) cannot reach.
+(
+  end=$(( $(date +%s) + TMO ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    left=$(( end - $(date +%s) )); [ "$left" -gt "$TICK" ] && left="$TICK"; [ "$left" -lt 1 ] && left=1
+    sleep "$left"
+    SZ=$(stat -c %s "$RD/output.log" 2>/dev/null || echo 0)
+    if [ "$SZ" -gt "$LOGMAX" ]; then
+      if tail -c $(( LOGMAX / 4 )) "$RD/output.log" > "$RD/output.trim" 2>/dev/null; then cat "$RD/output.trim" > "$RD/output.log"; fi
+      rm -f "$RD/output.trim"
+      echo "[sparkdash] output trimmed to the most recent part"
+    fi
+  done
+  : > "$RD/timeout"
+  echo "[sparkdash] the scan hit its time limit"
+  kill -TERM -- "-$$" 2>/dev/null
+) &
+WD=$!
 
 stage clone
+# The clone ignores the user's global git config (credential helpers, insteadOf), follows no redirect,
+# runs no hooks and fetches no LFS objects; only the one protocol the source type needs is allowed.
+GITENV=(env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=2
+  GIT_CONFIG_KEY_0=http.followRedirects GIT_CONFIG_VALUE_0=false
+  GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null
+  GIT_LFS_SKIP_SMUDGE=1 GIT_TERMINAL_PROMPT=0)
 if [ "$KIND" = url ]; then
-  GIT_ALLOW_PROTOCOL=https vh clone "$VAL" --dest "$RD/src" || { echo "[sparkdash] clone failed"; RC=3; exit 3; }
+  "\${GITENV[@]}" GIT_ALLOW_PROTOCOL=https vh clone "$VAL" --dest "$RD/src"
 else
-  GIT_ALLOW_PROTOCOL=file git clone --depth 1 -- "file://$VAL" "$RD/src" || { echo "[sparkdash] could not clone the local checkout (is it a git repository with a commit?)"; RC=3; exit 3; }
+  "\${GITENV[@]}" GIT_ALLOW_PROTOCOL=file git clone --depth 1 -- "file://$VAL" "$RD/src"
 fi
-echo "[sparkdash] checked out $(git -C "$RD/src" rev-parse --short HEAD 2>/dev/null || echo unknown) in $RD/src"
+CRC=$?
+terminated
+if [ "$CRC" -ne 0 ]; then
+  if [ "$KIND" = url ]; then echo "[sparkdash] clone failed"; else echo "[sparkdash] could not clone the local checkout (is it a git repository with a commit?)"; fi
+  RC=3; exit 3
+fi
+echo "[sparkdash] checked out $(git -C "$RD/src" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
 # A repository can ship a directory that looks like a results folder: only folders created by THIS hunt count.
 vh find-results "$RD/src" > "$RD/before.txt" 2>/dev/null
@@ -102,48 +181,60 @@ PF="$RD/prompt.txt"
   printf '\\n'
 } > "$PF"
 
+terminated
 stage hunt
 cd "$RD/src" || { RC=3; exit 3; }
-# The hunt runs in the background of THIS session so that a stop request (TERM to the whole group)
-# and the time limit both reach the harness and everything it started. GNU timeout is avoided on
-# purpose: it moves its child into a new process group, which the dashboard's stop cannot reach.
-TERMED=""
-trap 'TERMED=1; trap "" TERM INT; kill -TERM -- "-$$" 2>/dev/null' TERM INT
+# The hunt runs in the background of THIS session so that a stop request and the time limit both
+# reach the harness and everything it started.
 vh host "$PF" &
 HP=$!
-( sleep "$TMO"; : > "$RD/timeout"; echo "[sparkdash] the hunt hit its time limit"; kill -TERM -- "-$$" 2>/dev/null ) &
-WD=$!
 wait "$HP"; HRC=$?
 if [ -n "$TERMED" ]; then
-  for i in $(seq 1 30); do kill -0 "$HP" 2>/dev/null || break; sleep 1; done
-  kill -0 "$HP" 2>/dev/null && kill -KILL -- "-$$" 2>/dev/null
-  wait "$HP" 2>/dev/null; HRC=143
+  # Give the harness its grace period, then end whatever is left; this shell survives to collect.
+  for i in $(seq 1 "$GRACE"); do kill -0 "$HP" 2>/dev/null || break; sleep 1; done
+  kill -0 "$HP" 2>/dev/null && kill_rest KILL
+  wait "$HP" 2>/dev/null
 fi
-# Everything the hunt left in this session (the time-limit watchdog and its sleep, orphaned harness helpers) goes now;
-# this shell ignores the signal, so only the leftovers die.
-trap "" TERM INT
-kill -TERM -- "-$$" 2>/dev/null
-wait 2>/dev/null
-[ -f "$RD/timeout" ] && HRC=124
-rm -f "$PF" "$RD/timeout"
+rm -f "$PF"
+if [ -f "$RD/timeout" ]; then HRC=124
+elif [ -n "$TERMED" ]; then HRC=143
+fi
+case "$HRC" in
+  0|124|143) ;;
+  *) echo "[sparkdash] the harness command exited with code $HRC"; HRC=10;;
+esac
+[ "$HRC" = 124 ] && echo "[sparkdash] the hunt was ended at its time limit"
 
 stage collect
+mkdir -p "$RD/results"
 R=""
 while IFS= read -r d; do
   [ -n "$d" ] || continue
+  [ -L "$d" ] && continue
   grep -qxF -- "$d" "$RD/before.txt" 2>/dev/null && continue
   R="$d"; break
 done < <(vh find-results "$RD/src" 2>/dev/null)
 if [ -n "$R" ]; then
-  printf '%s\\n' "$R" > "$RD/results-dir"
   EC=0; [ "$HRC" -eq 0 ] || EC=1
   vh write-manifest "$R" --exit-code "$EC" && vh validate-manifest "$R"
+  NAME=$(basename -- "$R")
+  if mv -- "$R" "$RD/results/$NAME"; then
+    printf '%s\\n' "$RD/results/$NAME" > "$RD/results-dir"
+  else
+    echo "[sparkdash] could not keep the results folder"; R=""
+  fi
 else
   echo "[sparkdash] the hunt produced no new *_VULNHUNT_RESULTS_* directory"
 fi
+# The clone is not needed any more (the results folder was moved out of it).
+rm -rf "$RD/src"
 RC=$HRC
 if [ "$HRC" -eq 0 ] && [ -z "$R" ]; then RC=4; fi
 stage done
+# Whatever the hunt left in this session (the watchdog and its sleep, orphaned helpers) ends now.
+trap "" TERM INT
+kill -TERM -- "-$$" 2>/dev/null
+wait 2>/dev/null
 exit "$RC"
 `;
 
@@ -156,14 +247,16 @@ export function buildRunProgram({ runId, argvB64, displayLine, nonce = "" }) {
 ${PATH_LINE}
 ${dirs(runId)}
 ${HELPERS}
+${FIRST_TOKEN}
 fail() { echo "[sparkdash] $1"; echo "${TX}$2"; exit 0; }
 command -v vh >/dev/null 2>&1 || fail "vh (the VulnHunter operator CLI) is not installed on this unit. Open the setup steps on the Security page." 127
 command -v git >/dev/null 2>&1 || fail "git is not installed on this unit." 127
-command -v timeout >/dev/null 2>&1 || fail "timeout (coreutils) is not installed on this unit." 127
+command -v setsid >/dev/null 2>&1 || fail "setsid (util-linux) is not installed on this unit." 127
 if [ "$PID" != 0 ] && alive; then echo "[sparkdash] this scan is already running"; echo "${TX}-1"; exit 0; fi
 mapfile -d '' -t ARGS < <(printf %s '${argvB64}' | base64 -d)
 KIND="\${ARGS[0]}"; VAL="\${ARGS[1]}"; RO="\${ARGS[2]}"; TMO="\${ARGS[3]}"
 case "$KIND" in url|path) ;; *) fail "unknown source type" 2;; esac
+case "$TMO" in ''|*[!0-9]*) fail "invalid time limit" 2;; esac
 
 # The harness command lives on the unit, never in the request.
 HOSTCMD="\${VULNHUNT_HOST_CMD:-}"
@@ -175,14 +268,16 @@ if [ -z "$HOSTCMD" ] && [ -e "$CF" ]; then
   HOSTCMD=$(head -n 1 "$CF")
 fi
 [ -n "$HOSTCMD" ] || fail "No harness command is configured. Put your harness's headless one-shot on one line in $CF (see the setup steps on the Security page)." 126
-FIRST=\${HOSTCMD%% *}
-command -v "\${FIRST//\\"/}" >/dev/null 2>&1 || fail "The configured harness command was not found on PATH: \${FIRST}" 126
+FIRST=$(first_token "$HOSTCMD")
+[ -n "$FIRST" ] && command -v "$FIRST" >/dev/null 2>&1 || fail "The configured harness command was not found on PATH: $FIRST" 126
 export VULNHUNT_HOST_CMD="$HOSTCMD"
 
 if [ "$KIND" = path ]; then
   case "$VAL" in "~/"*) VAL="$HOME/\${VAL#\\~/}";; esac
   REAL=$(realpath -e -- "$VAL" 2>/dev/null) || fail "That path does not exist on this unit." 2
-  case "$REAL" in "$HOME"/*) ;; *) fail "The path must be inside this unit user's home directory." 2;; esac
+  # Both sides resolved: a symlinked home or checkout location is common and must not read as "outside".
+  REALHOME=$(realpath -e -- "$HOME" 2>/dev/null) || REALHOME="$HOME"
+  case "$REAL" in "$REALHOME"/*) ;; *) fail "The path must be inside this unit user's home directory." 2;; esac
   [ -d "$REAL/.git" ] || [ -f "$REAL/.git" ] || fail "That path is not a git checkout." 2
   VAL="$REAL"
 fi
@@ -209,16 +304,20 @@ echo "${TX}$(cat "$X" 2>/dev/null || echo -1)"
 `);
 }
 
-/** Ask a running scan to stop: TERM its process group, KILL after a grace period. */
+/**
+ * Ask a running scan to stop: TERM its process group, then wait longer than the wrapper's own grace
+ * period (it winds the harness down and collects what exists) before ending the group outright.
+ */
 export function buildStopProgram({ runId }) {
   return wrap(`
 ${dirs(runId)}
 ${HELPERS}
+GRACE="\${SPARKDASH_VULNHUNT_GRACE:-${GRACE_SECONDS}}"
 for i in 1 2 3 4 5 6 7 8 9 10; do [ -f "$P" ] || [ -f "$X" ] && break; sleep 0.5; done
 PID=$(cat "$P" 2>/dev/null || echo 0)
 if [ "$PID" = 0 ] || ! alive; then echo "not running"; exit 0; fi
 kill -TERM -- "-$PID" 2>/dev/null || kill -TERM "$PID" 2>/dev/null
-for i in 1 2 3 4 5 6 7 8; do alive || break; sleep 1; done
+for i in $(seq 1 $(( GRACE + 15 ))); do alive || break; sleep 1; done
 if alive; then kill -KILL -- "-$PID" 2>/dev/null || kill -KILL "$PID" 2>/dev/null; echo "killed"; else echo "stopped"; fi
 `);
 }
@@ -237,9 +336,10 @@ if [ "$PID" != 0 ] && alive; then echo ALIVE; else echo "EXIT=$(cat "$X" 2>/dev/
 export function buildStatusProgram() {
   return wrap(`
 ${PATH_LINE}
+${FIRST_TOKEN}
 echo "VH=$(command -v vh || true)"
 echo "GIT=$(command -v git || true)"
-echo "TIMEOUT=$(command -v timeout || true)"
+echo "SETSID=$(command -v setsid || true)"
 HOSTCMD="\${VULNHUNT_HOST_CMD:-}"; SRC=""
 CF="${HOST_CMD_FILE}"
 if [ -n "$HOSTCMD" ]; then SRC=env
@@ -252,9 +352,9 @@ elif [ -e "$CF" ]; then
 fi
 echo "HOSTCMD_SOURCE=\${SRC:-none}"
 if [ -n "$HOSTCMD" ]; then
-  FIRST=\${HOSTCMD%% *}; FIRST=\${FIRST//\\"/}
+  FIRST=$(first_token "$HOSTCMD")
   echo "HOSTCMD_PROGRAM=$(basename -- "$FIRST")"
-  command -v "$FIRST" >/dev/null 2>&1 && echo "HOSTCMD_FOUND=1" || echo "HOSTCMD_FOUND=0"
+  [ -n "$FIRST" ] && command -v "$FIRST" >/dev/null 2>&1 && echo "HOSTCMD_FOUND=1" || echo "HOSTCMD_FOUND=0"
 fi
 echo "HOSTCMD_FILE=${HOST_CMD_FILE}"
 echo "RUNROOT=${RUN_ROOT}"
@@ -264,15 +364,17 @@ echo "RUNROOT=${RUN_ROOT}"
 /**
  * Print what a finished scan produced, sectioned by per-call sentinels (the report body is
  * agent-written text, so the sentinels carry a nonce it cannot know and the report comes LAST).
- * Symlinks are never followed: a results folder that points outside the checkout reads as empty.
+ * Both sides of the location check are resolved paths, and symlinks are never followed: a results
+ * folder or report that points outside <run>/results reads as empty.
  */
 export function buildReadReportProgram({ runId, sentinel, maxReportBytes = 2 * 1024 * 1024 }) {
   const S = sentinel;
   return wrap(`
 RD="${RUN_ROOT}/${runId}"
+REALRD=$(realpath -e -- "$RD" 2>/dev/null) || { echo "${S}NORESULT"; exit 0; }
 RES=$(head -n 1 "$RD/results-dir" 2>/dev/null)
 REALRES=$(realpath -e -- "$RES" 2>/dev/null)
-case "$REALRES" in "$RD/src/"*) ;; *) echo "${S}NORESULT"; exit 0;; esac
+case "$REALRES" in "$REALRD/results/"*) ;; *) echo "${S}NORESULT"; exit 0;; esac
 [ -d "$REALRES" ] && [ ! -L "$RES" ] || { echo "${S}NORESULT"; exit 0; }
 cd "$REALRES" || { echo "${S}NORESULT"; exit 0; }
 echo "${S}DIR"; basename -- "$REALRES"

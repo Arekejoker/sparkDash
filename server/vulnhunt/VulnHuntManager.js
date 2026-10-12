@@ -13,7 +13,11 @@ import {
 import { summarizeReport } from "./report.js";
 
 const RUN_WATCH_MAX_MS = 13 * 60 * 60 * 1000;
-const MAX_LINE_CHARS = 64 * 1024;
+/** Harness transcripts can be one huge JSON object per line: a displayed line is clipped, and the whole buffer has a byte budget. */
+const MAX_LINE_CHARS = 8 * 1024;
+const MAX_BUFFER_CHARS = 2 * 1024 * 1024;
+const MAX_BUFFER_LINES = 5000;
+const STOP_TIMEOUT_MS = 70_000;
 const STAGES = new Set(["clone", "hunt", "collect", "done"]);
 
 /** Exit codes the on-unit wrapper uses, as a sentence. */
@@ -27,16 +31,18 @@ export function explainExit(code) {
       return "The repository could not be cloned.";
     case 4:
       return "The hunt finished but produced no results folder.";
+    case 10:
+      return "The harness command exited with an error (see the output).";
     case 124:
       return "The hunt hit its time limit.";
     case 126:
       return "The harness command is not configured safely on the unit.";
     case 127:
-      return "VulnHunter is not fully set up on the unit.";
+      return "VulnHunter, git or setsid is not set up on the unit.";
     case 143:
       return "The scan was stopped.";
     default:
-      return code != null ? `The hunt exited with code ${code}.` : null;
+      return code != null ? `The scan ended with code ${code}.` : null;
   }
 }
 
@@ -52,7 +58,10 @@ export class VulnHuntManager extends ToolEvalManager {
   }
 
   summary(job) {
-    return { ...super.summary(job), stage: job.progress?.stage ?? null };
+    const base = super.summary(job);
+    // Exit 143 is the wrapper's "stopped on request", whether or not this process saw the request.
+    const status = base.status === "failed" && base.exitCode === 143 ? "stopped" : base.status;
+    return { ...base, status, stage: job.progress?.stage ?? null };
   }
 
   _newJob(spark, opts) {
@@ -73,9 +82,13 @@ export class VulnHuntManager extends ToolEvalManager {
     }
     const m = /^\[sparkdash\] stage: ([a-z]+)$/.exec(line);
     if (m && STAGES.has(m[1])) job.progress = { ...job.progress, stage: m[1] };
+    const text = line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS)} … [line truncated]` : line;
     job.lseq += 1;
-    job.lines.push({ seq: job.lseq, text: line.slice(0, MAX_LINE_CHARS), stream: "out" });
-    if (job.lines.length > 5000) job.lines.splice(0, job.lines.length - 5000);
+    job.lines.push({ seq: job.lseq, text, stream: "out" });
+    job.bufChars = (job.bufChars ?? 0) + text.length;
+    while (job.lines.length > MAX_BUFFER_LINES || (job.bufChars > MAX_BUFFER_CHARS && job.lines.length > 1)) {
+      job.bufChars -= job.lines.shift().text.length;
+    }
   }
 
   async _status(spark) {
@@ -93,7 +106,7 @@ export class VulnHuntManager extends ToolEvalManager {
       installed,
       path: kv.VH || null,
       git: Boolean(kv.GIT),
-      timeout: Boolean(kv.TIMEOUT),
+      setsid: Boolean(kv.SETSID),
       hostCommand: {
         source,
         program: kv.HOSTCMD_PROGRAM || null,
@@ -101,10 +114,24 @@ export class VulnHuntManager extends ToolEvalManager {
         file: kv.HOSTCMD_FILE || null,
         configured: hostConfigured,
       },
-      ready: installed && Boolean(kv.GIT) && Boolean(kv.TIMEOUT) && hostConfigured,
+      ready: installed && Boolean(kv.GIT) && Boolean(kv.SETSID) && hostConfigured,
       runRoot: kv.RUNROOT || null,
       error: res.error,
     };
+  }
+
+  /**
+   * Could a scan start on this unit right now? Checked by the route BEFORE the run is stored, so a
+   * refused request never evicts history.
+   * @returns {{ ok: true } | { ok: false, reason: "busy", active: object }}
+   */
+  canStart(spark) {
+    const busy = this.activeJob(spark.id);
+    if (busy && busy.kind !== "attach") return { ok: false, reason: "busy", active: this.summary(busy) };
+    // A scan whose watcher ended (detached, cancelled) may still be running on the unit.
+    const orphan = this.store.list({ sparkId: spark.id }).find((r) => r.status === "running");
+    if (orphan) return { ok: false, reason: "busy", active: { id: orphan.id, sparkId: spark.id, kind: "run", status: "running" } };
+    return { ok: true };
   }
 
   /**
@@ -114,7 +141,7 @@ export class VulnHuntManager extends ToolEvalManager {
   startScan(spark, { run, argv }) {
     const busy = this.activeJob(spark.id);
     if (busy && busy.kind !== "attach") return { ok: false, reason: "busy", active: this.summary(busy) };
-    // A scan whose watcher ended (detached, cancelled) may still be running on the unit.
+    // The record was stored by the caller before this call, so it is excluded from the orphan check.
     const orphan = this.store.list({ sparkId: spark.id }).find((r) => r.status === "running" && r.id !== run.id);
     if (orphan) return { ok: false, reason: "busy", active: { id: orphan.id, sparkId: spark.id, kind: "run", status: "running" } };
     if (busy) this._detach(busy, spark);
@@ -143,37 +170,51 @@ export class VulnHuntManager extends ToolEvalManager {
     return { ok: true, job };
   }
 
-  async stopRun(spark, runId) {
+  /**
+   * Ask the scan to stop (TERM, then KILL after the wrapper's grace) via the unit, regardless of who
+   * is watching. `stopRequested` is set first because the job can end before this call returns; it is
+   * taken back when the stop did not happen, so a later natural failure is not shown as "stopped".
+   */
+  async stopRun(spark, runId, { timeoutMs = STOP_TIMEOUT_MS } = {}) {
     const live = this.jobs.get(spark.id);
-    if (live && live.id === runId) live.stopRequested = true;
-    const res = await this.runOnce(spark, buildStopProgram({ runId }), { timeoutMs: 40_000 });
-    return { ok: res.ok, output: res.output };
+    const mine = live && live.id === runId ? live : null;
+    if (mine) mine.stopRequested = true;
+    const res = await this.runOnce(spark, buildStopProgram({ runId }), { timeoutMs });
+    const stopped = res.ok && /\b(stopped|killed)\b/.test(res.output);
+    if (mine && !stopped && mine.status === "running") mine.stopRequested = false;
+    return { ok: res.ok && stopped, output: res.output };
   }
 
   async _afterJob(job, spark) {
     const run = this.store.get(job.id);
     if (!run) return;
-    if (job.status === "detached") return; // still unknown; checkRun() settles it later
-    if (job.kind === "attach" && job.cancelled) return;
+    // Nothing is known yet: the scan may still be running (watcher closed, connection lost, dashboard
+    // shutting down). The record and Activity stay as they are; checkRun() settles it later.
+    if (job.status === "detached" || job.status === "cancelled") return;
+    const code = job.exitCode;
     const finalStatus =
-      job.status === "stopped"
+      job.status === "stopped" || code === 143
         ? "stopped"
-        : job.exitCode === 0
+        : code === 0
           ? "completed"
-          : job.exitCode == null && job.status !== "failed"
+          : code == null && job.status !== "failed"
             ? run.status
             : "failed";
     this.store.update(job.id, {
       status: finalStatus,
-      exitCode: job.exitCode,
+      exitCode: code,
       finishedAt: job.finishedAt ?? this.now(),
-      note: explainExit(job.exitCode),
+      note: code != null ? explainExit(code) : job.error ?? null,
     });
     await this.captureResult(spark, job.id);
     const fresh = this.store.get(job.id);
     const total = fresh?.summary?.total;
     const c = fresh?.summary?.counts;
     const serious = c ? (c["High+"] ?? 0) + (c.High ?? 0) : 0;
+    // A scan that finished but whose report could not be read says so, instead of a bare "Completed".
+    if (finalStatus === "completed" && fresh && !fresh.resultCached) {
+      this.store.update(job.id, { note: "The scan finished but no report could be read from the unit." });
+    }
     this.onEvent({
       type: `vulnhunt.scan.${finalStatus}`,
       severity: finalStatus === "completed" ? (serious > 0 ? "warn" : "success") : finalStatus === "stopped" ? "info" : "error",
@@ -183,7 +224,7 @@ export class VulnHuntManager extends ToolEvalManager {
           ? `VulnHunter scan finished: ${total != null ? `${total} confirmed finding${total === 1 ? "" : "s"}` : "no report"}${serious > 0 ? ` (${serious} High or above)` : ""}`
           : finalStatus === "stopped"
             ? "VulnHunter scan stopped"
-            : `VulnHunter scan failed${job.exitCode != null ? ` (exit ${job.exitCode})` : ""}`,
+            : `VulnHunter scan failed${code != null ? ` (exit ${code})` : ""}`,
     });
   }
 
@@ -249,11 +290,13 @@ export class VulnHuntManager extends ToolEvalManager {
     const code = Number.parseInt(m[1], 10);
     const run = this.store.get(runId);
     if (run && run.status === "running") {
+      // No exit file (code -1) means the wrapper never got to write one: the unit restarted or the
+      // process was killed. That is a failure with an explanation, not a stop.
       this.store.update(runId, {
-        status: code === 0 ? "completed" : code < 0 || code === 143 ? "stopped" : "failed",
+        status: code === 0 ? "completed" : code === 143 ? "stopped" : "failed",
         exitCode: code >= 0 ? code : null,
         finishedAt: this.now(),
-        note: explainExit(code),
+        note: code >= 0 ? explainExit(code) : "The scan ended without reporting a result (the unit may have restarted, or the process was killed).",
       });
       await this.captureResult(spark, runId);
     }

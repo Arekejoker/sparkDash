@@ -12,6 +12,7 @@ case "$1" in
     url="$2"; dest=""; shift 2
     while [ $# -gt 0 ]; do [ "$1" = --dest ] && dest="$2"; shift; done
     [ -n "$FAKE_CLONE_FAIL" ] && { echo "fatal: unable to access '$url'" >&2; exit 2; }
+    [ -f "$HOME/slow-clone" ] && sleep 60
     mkdir -p "$dest"; git init -q "$dest"
     git -C "$dest" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
     if [ -f "$HOME/plant-results" ]; then
@@ -59,7 +60,11 @@ cp "$prompt" "$HOME/prompt.seen"
 echo $$ > "$HOME/harness.pid"
 dir=$(sed -n '1s|^/vulnhunt ||p' "$prompt")
 echo "harness: hunting in $dir"
+if [ -f "$HOME/spew" ]; then head -c 400000 /dev/zero | tr '\\0' 'x' | fold -w 200; fi
+[ -f "$HOME/exit-code" ] && exit "$(cat "$HOME/exit-code")"
+[ -f "$HOME/ignore-term" ] && { trap '' TERM; while true; do sleep 1; done; }
 [ -f "$HOME/slow" ] && { sleep 60; }
+[ -f "$HOME/spew-wait" ] && sleep 6
 [ -f "$HOME/no-results" ] && exit 0
 res="$dir/proj_VULNHUNT_RESULTS_2026-10-12-000000"
 mkdir -p "$res/poc" "$res/exploit_tests"

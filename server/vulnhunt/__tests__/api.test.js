@@ -19,7 +19,7 @@ async function freePort() {
   return port;
 }
 
-async function startServer(t) {
+async function startServer(t, extraEnv = {}) {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "sparkdash-vh-"));
   fs.writeFileSync(path.join(tmp, "sparks.json"), "[]\n");
   installFakeUnit(tmp);
@@ -27,7 +27,10 @@ async function startServer(t) {
   const child = spawn(process.execPath, ["server/index.js"], {
     cwd: path.resolve(import.meta.dirname, "../../.."),
     env: {
-      ...process.env,
+      // The developer's own VulnHunter / dashboard settings must never reach a test server.
+      ...Object.fromEntries(
+        Object.entries(process.env).filter(([k]) => !k.startsWith("VULNHUNT_") && !k.startsWith("SPARKDASH_") && k !== "DASHBOARD_TOKEN" && k !== "BIND_HOST")
+      ),
       ...isolatedConfigEnv(tmp),
       HOME: tmp,
       BIND_HOST: "127.0.0.1",
@@ -44,10 +47,16 @@ async function startServer(t) {
       LLM_LAUNCHERS_JSON_PATH: path.join(tmp, "llm-launchers.json"),
       VULNHUNT_RUNS_PATH: path.join(tmp, "vulnhunt-runs.json"),
       VULNHUNT_RESULTS_DIR: path.join(tmp, "vulnhunt-results"),
+      SPARKDASH_VULNHUNT_GRACE: "2",
+      ...extraEnv,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  t.after(() => child.kill("SIGTERM"));
+  t.after(async () => {
+    child.kill("SIGTERM");
+    await new Promise((resolve) => (child.exitCode != null ? resolve() : child.once("exit", resolve)));
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
   let output = "";
   child.stdout.on("data", (c) => (output += c));
   child.stderr.on("data", (c) => (output += c));
@@ -116,7 +125,12 @@ test("VulnHunter over HTTP: setup, status, validation, a streamed scan, its pars
   const rid = start.body.run.id;
   assert.equal(start.body.run.readOnly, true);
   assert.equal(start.body.run.label, "ci");
+  const before = (await api(port, `${base}/runs`)).body.runs.length;
   assert.equal((await post({ source: src, authorized: true })).status, 409, "one job per unit");
+  assert.equal((await api(port, `${base}/runs`)).body.runs.length, before, "a refused start stores nothing");
+  assert.equal(typeof start.body.run.authorization.at, "number", "the attestation is kept on the run");
+  assert.equal(typeof start.body.run.authorization.by, "string");
+  assert.equal((await api(port, `${base}/runs/${rid}/report`)).status, 409, "no report is read mid-scan");
 
   const done = await until(async () => {
     const s = await api(port, `${base}/runs/${rid}/stream?lineSince=0`);
@@ -148,4 +162,100 @@ test("VulnHunter over HTTP: setup, status, validation, a streamed scan, its pars
   assert.equal((await api(port, `${base}/runs/${rid}`)).status, 404);
   assert.equal((await api(port, `${base}/runs/not-a-run-id`)).status, 404);
   assert.equal((await api(port, `${base}/runs`)).body.runs.length, 0);
+});
+
+/** Scans are detached on purpose: end one and wait, so no wrapper is still writing when its temp dir is removed. */
+async function settleScan(port, rid, headers = {}) {
+  const base = "/api/sparks/alpha/vulnhunt";
+  await api(port, `${base}/runs/${rid}/stop`, { method: "POST", headers, body: "{}" });
+  await until(async () => (await api(port, `${base}/runs/${rid}`, { headers })).body.run?.status !== "running");
+}
+
+async function addLocalSpark(port, headers = {}) {
+  const created = await api(port, "/api/sparks", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ id: "alpha", name: "alpha", lanIp: "127.0.0.1", isLocal: true, ssh: { host: "127.0.0.1", user: os.userInfo().username, auth: "key" } }),
+  });
+  assert.equal(created.status, 200);
+}
+
+test("VulnHunter over HTTP: starting a scan needs a token or a loopback bind, and the pinned host list is enforced", async (t) => {
+  const body = JSON.stringify({ source: { type: "url", value: "https://example.com/org/repo" }, authorized: true });
+
+  // Reachable from the network and no token: the dashboard is open, so scans are not offered.
+  const open = await startServer(t, { BIND_HOST: "0.0.0.0" });
+  await addLocalSpark(open.port);
+  const setup = await api(open.port, "/api/vulnhunt/setup");
+  assert.equal(setup.body.startAllowed, false);
+  assert.match(setup.body.startBlockedReason, /SPARKDASH_TOKEN/);
+  const refused = await api(open.port, "/api/sparks/alpha/vulnhunt/runs", { method: "POST", body });
+  assert.equal(refused.status, 403);
+  assert.match(refused.body.error, /SPARKDASH_TOKEN/);
+  assert.equal((await api(open.port, "/api/sparks/alpha/vulnhunt/runs")).body.runs.length, 0);
+
+  // Same bind with a token: allowed for a caller that has it.
+  const token = "t0ken-for-tests";
+  const guarded = await startServer(t, { BIND_HOST: "0.0.0.0", SPARKDASH_TOKEN: token });
+  const auth = { Authorization: `Bearer ${token}` };
+  await addLocalSpark(guarded.port, auth);
+  assert.equal((await api(guarded.port, "/api/sparks/alpha/vulnhunt/runs", { method: "POST", body })).status, 401);
+  const ok = await api(guarded.port, "/api/sparks/alpha/vulnhunt/runs", { method: "POST", body, headers: auth });
+  assert.equal(ok.status, 202);
+  assert.equal((await api(guarded.port, "/api/vulnhunt/setup", { headers: auth })).body.startAllowed, true);
+  await settleScan(guarded.port, ok.body.run.id, auth);
+
+  // A pinned host list.
+  const pinned = await startServer(t, { VULNHUNT_ALLOWED_HOSTS: "git.example.org, *.corp.example" });
+  await addLocalSpark(pinned.port);
+  const ps = await api(pinned.port, "/api/vulnhunt/setup");
+  assert.deepEqual(ps.body.allowedHosts, ["git.example.org", "*.corp.example"]);
+  const no = await api(pinned.port, "/api/sparks/alpha/vulnhunt/runs", { method: "POST", body });
+  assert.equal(no.status, 400);
+  assert.match(no.body.error, /VULNHUNT_ALLOWED_HOSTS/);
+  const yes = await api(pinned.port, "/api/sparks/alpha/vulnhunt/runs", {
+    method: "POST",
+    body: JSON.stringify({ source: { type: "url", value: "https://git.example.org/org/repo" }, authorized: true }),
+  });
+  assert.equal(yes.status, 202);
+  await settleScan(pinned.port, yes.body.run.id);
+});
+
+test("VulnHunter over HTTP: deleting a running scan needs force, and a forced delete stops it first", async (t) => {
+  const { port, tmp } = await startServer(t);
+  await addLocalSpark(port);
+  fs.writeFileSync(path.join(tmp, "slow"), "");
+  const base = "/api/sparks/alpha/vulnhunt";
+  const start = await api(port, `${base}/runs`, {
+    method: "POST",
+    body: JSON.stringify({ source: { type: "url", value: "https://example.com/org/repo" }, authorized: true }),
+  });
+  assert.equal(start.status, 202);
+  const rid = start.body.run.id;
+  await until(() => fs.existsSync(path.join(tmp, "harness.pid")));
+  const hp = Number(fs.readFileSync(path.join(tmp, "harness.pid"), "utf8"));
+
+  const plain = await api(port, `${base}/runs/${rid}`, { method: "DELETE" });
+  assert.equal(plain.status, 409, "a running scan is not deleted without saying so");
+  assert.equal(await api(port, `${base}/runs/${rid}`).then((r) => r.status), 200);
+
+  const forced = await api(port, `${base}/runs/${rid}?force=1`, { method: "DELETE" });
+  assert.equal(forced.status, 200);
+  await until(() => {
+    try {
+      process.kill(hp, 0);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  assert.equal((await api(port, `${base}/runs`)).body.runs.length, 0);
+  // Nothing may still be running on the unit, so a new scan is allowed.
+  fs.rmSync(path.join(tmp, "slow"));
+  const again = await api(port, `${base}/runs`, {
+    method: "POST",
+    body: JSON.stringify({ source: { type: "url", value: "https://example.com/org/repo" }, authorized: true }),
+  });
+  assert.equal(again.status, 202);
+  await settleScan(port, again.body.run.id);
 });

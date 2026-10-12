@@ -38,6 +38,8 @@ config/events.json
 config/llm-launchers.json
 config/tool-eval-runs.json
 config/tool-eval-results/
+config/vulnhunt-runs.json
+config/vulnhunt-results/
 config/gpu-history.json
 config/fleet-energy.scope-*.json
 config/*.tmp

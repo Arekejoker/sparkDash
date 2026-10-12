@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -6,11 +6,20 @@ import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { validateScanRequest, validateSource, scanArgv, displayLine } from "../validate.js";
 import { parseFindings, parseHeader, parseManifest, countBySeverity, summarizeReport } from "../report.js";
+import { isBlockedCloneHost, parseAllowedHosts } from "../validate.js";
 import { VulnHuntStore, isValidRunId, newRunId } from "../VulnHuntStore.js";
 import { VulnHuntManager, explainExit } from "../VulnHuntManager.js";
 import { installFakeUnit, REPORT } from "./fakeVulnHunt.js";
 
-const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
+const made = [];
+const tmp = (p) => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), p));
+  made.push(d);
+  return d;
+};
+after(() => {
+  for (const d of made) fs.rmSync(d, { recursive: true, force: true });
+});
 const until = async (fn, ms = 25_000) => {
   const end = Date.now() + ms;
   while (Date.now() < end) {
@@ -137,7 +146,7 @@ test("explainExit: every wrapper exit code reads as a sentence", () => {
 
 const spark = { id: "s1", name: "Spark 1" };
 
-function realManager(home) {
+function realManager(home, extraEnv) {
   const store = new VulnHuntStore({ file: path.join(home, "runs.json"), resultsDir: path.join(home, "results") });
   const events = [];
   const mgr = new VulnHuntManager({
@@ -145,7 +154,15 @@ function realManager(home) {
     onEvent: (e) => events.push(e),
     spawnProcess: (_s, cmd, opts = {}) =>
       spawn("bash", ["-c", cmd], {
-        env: { ...process.env, HOME: home, PATH: `/usr/local/bin:/usr/bin:/bin`, VULNHUNT_HOST_CMD: "" },
+        env: {
+          ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("VULNHUNT_") && !k.startsWith("SPARKDASH_VULNHUNT_"))),
+          HOME: home,
+          PATH: `/usr/local/bin:/usr/bin:/bin`,
+          SPARKDASH_VULNHUNT_GRACE: "2",
+          SPARKDASH_VULNHUNT_TICK: "1",
+          SPARKDASH_VULNHUNT_LOGMAX: "100000",
+          ...(extraEnv ?? {}),
+        },
         stdio: [opts.stdin ? "pipe" : "ignore", "pipe", "pipe"],
         detached: true,
       }),
@@ -258,6 +275,7 @@ test("pipeline: not set up -> clear message and exit 127 / 126, nothing is start
   const st = await mgr.status(spark);
   assert.equal(st.installed, true);
   assert.equal(st.hostCommand.configured, false);
+  assert.equal(st.setsid, true);
   assert.equal(st.ready, false);
 });
 
@@ -379,4 +397,261 @@ test("pipeline: a clone failure is reported and settles as failed (exit 3)", asy
     if (prev === undefined) delete process.env.FAKE_CLONE_FAIL;
     else process.env.FAKE_CLONE_FAIL = prev;
   }
+});
+
+// ── review fixes: regression tests ──────────────────────────────────────────
+
+const runDirOf = (home, id) => path.join(home, ".cache", "sparkdash", "vulnhunt", id);
+const pidAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const processesMentioning = (needle) =>
+  execFileSync("ps", ["-eo", "args"], { encoding: "utf8" })
+    .split("\n")
+    .filter((l) => l.includes(needle) && !l.includes("ps -eo"));
+
+test("pipeline: only the results folder is kept; the clone is deleted, run files are private, nothing is left running", async () => {
+  const home = tmp("vh-home-");
+  installFakeUnit(home);
+  const { mgr, store } = realManager(home);
+  const { id } = startScan(mgr, store);
+  await settled(mgr);
+  await until(() => store.get(id).resultCached);
+  const rd = runDirOf(home, id);
+  assert.equal(fs.existsSync(path.join(rd, "src")), false, "the clone is gone");
+  const kept = fs.readdirSync(path.join(rd, "results"));
+  assert.equal(kept.length, 1);
+  assert.match(kept[0], /_VULNHUNT_RESULTS_/);
+  assert.ok(fs.existsSync(path.join(rd, "results", kept[0], "README.md")));
+  assert.equal(fs.statSync(path.join(rd, "output.log")).mode & 0o077, 0, "the log is private");
+  assert.equal(fs.statSync(rd).mode & 0o077, 0, "the run directory is private");
+  await until(() => processesMentioning(rd).length === 0, 5000);
+});
+
+test("pipeline: a symlinked ~/.cache does not hide the report (both sides of the location check are resolved)", async () => {
+  const home = tmp("vh-home-");
+  const elsewhere = tmp("vh-cache-");
+  fs.symlinkSync(elsewhere, path.join(home, ".cache"));
+  installFakeUnit(home);
+  const { mgr, store } = realManager(home);
+  const { id } = startScan(mgr, store);
+  await settled(mgr);
+  await until(() => store.get(id).status !== "running");
+  await until(() => store.get(id).resultCached);
+  assert.equal(store.get(id).status, "completed");
+  assert.equal(store.get(id).summary.total, 2);
+});
+
+test("pipeline: a symlinked $HOME does not make the user's own checkout read as outside it", async () => {
+  const real = tmp("vh-real-");
+  const linkParent = tmp("vh-link-");
+  const link = path.join(linkParent, "home");
+  fs.symlinkSync(real, link);
+  installFakeUnit(real);
+  const repo = path.join(real, "code", "proj");
+  fs.mkdirSync(repo, { recursive: true });
+  execFileSync("git", ["init", "-q", repo]);
+  execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]);
+  const { mgr, store } = realManager(link);
+  const { id } = startScan(mgr, store, { request: { kind: "path", value: "~/code/proj" } });
+  await settled(mgr);
+  await until(() => store.get(id).status !== "running");
+  assert.equal(store.get(id).status, "completed", JSON.stringify(mgr.readJob("s1", id, {}).lines.slice(-4)));
+});
+
+test("pipeline: stopping during the clone reads as stopped (143), not as a hunt that exited with 1", async () => {
+  const home = tmp("vh-home-");
+  installFakeUnit(home);
+  fs.writeFileSync(path.join(home, "slow-clone"), "");
+  const { mgr, store } = realManager(home);
+  const { id } = startScan(mgr, store);
+  await until(() => mgr.readJob("s1", id, {})?.progress.stage === "clone");
+  await new Promise((r) => setTimeout(r, 500));
+  const res = await mgr.stopRun(spark, id);
+  assert.equal(res.ok, true, res.output);
+  await settled(mgr);
+  await until(() => store.get(id).status !== "running");
+  const run = store.get(id);
+  assert.equal(run.exitCode, 143);
+  assert.equal(run.status, "stopped");
+  assert.match(run.note, /stopped/);
+});
+
+test("pipeline: a harness that ignores TERM is ended after the grace period and the scan still settles as stopped", async () => {
+  const home = tmp("vh-home-");
+  installFakeUnit(home);
+  fs.writeFileSync(path.join(home, "ignore-term"), "");
+  const { mgr, store } = realManager(home);
+  const { id } = startScan(mgr, store);
+  await until(() => fs.existsSync(path.join(home, "harness.pid")));
+  const hp = Number(fs.readFileSync(path.join(home, "harness.pid"), "utf8"));
+  const t0 = Date.now();
+  const res = await mgr.stopRun(spark, id);
+  assert.match(res.output, /stopped/, "the wrapper wound itself down; the stop did not have to end the whole group");
+  await settled(mgr);
+  await until(() => store.get(id).status !== "running");
+  assert.equal(store.get(id).exitCode, 143);
+  assert.equal(store.get(id).status, "stopped");
+  assert.equal(pidAlive(hp), false, "the harness is gone");
+  assert.ok(Date.now() - t0 < 25_000);
+  assert.ok(!mgr.readJob("s1", id, {}).lines.some((l) => /Killed|Terminated/.test(l.text)), "no job-control noise from the wrapper being killed");
+});
+
+test("pipeline: the harness's own exit code never stands in for the wrapper's", async () => {
+  for (const code of [2, 3, 127]) {
+    const home = tmp("vh-home-");
+    installFakeUnit(home);
+    fs.writeFileSync(path.join(home, "exit-code"), String(code));
+    const { mgr, store } = realManager(home);
+    const { id } = startScan(mgr, store);
+    await settled(mgr);
+    await until(() => store.get(id).status !== "running");
+    const run = store.get(id);
+    assert.equal(run.exitCode, 10, `harness exit ${code}`);
+    assert.match(run.note, /harness command exited with an error/);
+    assert.ok(mgr.readJob("s1", id, {}).lines.some((l) => new RegExp(`harness command exited with code ${code}`).test(l.text)));
+  }
+});
+
+test("pipeline: 'stop watching' leaves the record and Activity alone, and the scan keeps going", async () => {
+  const home = tmp("vh-home-");
+  installFakeUnit(home);
+  fs.writeFileSync(path.join(home, "slow"), "");
+  const { mgr, store, events } = realManager(home);
+  const { id } = startScan(mgr, store);
+  await until(() => fs.existsSync(path.join(home, "harness.pid")));
+  mgr.cancelWatch("s1");
+  await until(() => mgr.latestJob("s1").status === "cancelled");
+  await new Promise((r) => setTimeout(r, 300));
+  const run = store.get(id);
+  assert.equal(run.status, "running");
+  assert.ok(run.finishedAt == null, "elapsed time keeps counting");
+  assert.deepEqual(events.map((e) => e.type), ["vulnhunt.scan.started"], "no failure event");
+  await mgr.stopRun(spark, id);
+});
+
+test("pipeline: canStart refuses while a scan runs, so a refused request never has to evict history", async () => {
+  const home = tmp("vh-home-");
+  installFakeUnit(home);
+  fs.writeFileSync(path.join(home, "slow"), "");
+  const { mgr, store } = realManager(home);
+  assert.equal(mgr.canStart(spark).ok, true);
+  const { id } = startScan(mgr, store);
+  assert.equal(mgr.canStart(spark).ok, false);
+  assert.equal(mgr.canStart(spark).reason, "busy");
+  await mgr.stopRun(spark, id);
+  await settled(mgr);
+  await until(() => store.get(id).status !== "running");
+  assert.equal(mgr.canStart(spark).ok, true);
+});
+
+test("pipeline: a stop that did not happen is not remembered as a stop", async () => {
+  const home = tmp("vh-home-");
+  installFakeUnit(home);
+  fs.writeFileSync(path.join(home, "slow"), "");
+  const { mgr, store } = realManager(home);
+  const { id } = startScan(mgr, store);
+  await until(() => fs.existsSync(path.join(home, "harness.pid")));
+  const real = mgr.runOnce.bind(mgr);
+  mgr.runOnce = async () => ({ ok: false, code: 255, output: "ssh: connect to host x port 22: Connection refused", error: null });
+  const res = await mgr.stopRun(spark, id);
+  assert.equal(res.ok, false);
+  assert.equal(mgr.latestJob("s1").stopRequested, false);
+  mgr.runOnce = real;
+  await mgr.stopRun(spark, id);
+});
+
+test("pipeline: output.log is kept bounded on the unit and the in-memory buffer has a byte budget", async () => {
+  const home = tmp("vh-home-");
+  installFakeUnit(home);
+  fs.writeFileSync(path.join(home, "spew"), "");
+  fs.writeFileSync(path.join(home, "spew-wait"), "");
+  const { mgr, store } = realManager(home);
+  const { id } = startScan(mgr, store);
+  await settled(mgr);
+  await until(() => store.get(id).status !== "running");
+  const log = fs.readFileSync(path.join(runDirOf(home, id), "output.log"), "utf8");
+  assert.ok(log.length < 300_000, `log is ${log.length} bytes`);
+  assert.match(log, /output trimmed/);
+
+  // The browser-facing buffer: long lines are clipped, the total is budgeted.
+  const job = mgr._newJob({ id: "s1" }, { id: "vh-20260101-000000-abcd", kind: "run", type: "vulnhunt" });
+  for (let i = 0; i < 400; i++) mgr._line(job, "y".repeat(50_000));
+  assert.ok(job.lines.every((l) => l.text.length <= 8 * 1024 + 40));
+  assert.ok(job.lines.reduce((n, l) => n + l.text.length, 0) <= 2 * 1024 * 1024 + 8200);
+  assert.ok(job.lines.length >= 100);
+});
+
+test("clone policy: metadata names and addresses (including IPv6 forms that embed them) are blocked, private hosts are not", () => {
+  for (const host of [
+    "metadata.google.internal",
+    "metadata",
+    "something.internal",
+    "169.254.169.254",
+    "100.100.100.200",
+    "168.63.129.16",
+    "fd00:ec2::254",
+    "64:ff9b::a9fe:a9fe",
+    "2002:a9fe:a9fe::",
+    "::a9fe:a9fe",
+    "::ffff:169.254.169.254",
+    "fe80::1",
+  ]) {
+    assert.equal(isBlockedCloneHost(host), true, host);
+  }
+  for (const host of ["github.com", "gitlab.example.org", "10.0.0.5", "192.168.1.20", "127.0.0.1", "100.64.1.2", "git.lan", "fd12:3456::1", "2001:db8::1", "::1"]) {
+    assert.equal(isBlockedCloneHost(host), false, host);
+  }
+  assert.equal(validateSource({ type: "url", value: "https://metadata.google.internal/computeMetadata/v1" }).ok, false);
+  assert.equal(validateSource({ type: "url", value: "https://github.com/a/%2e%2e/c" }).ok, false, "encoded dot segments are not collapsed silently");
+});
+
+test("allowed hosts: when pinned, only those hosts (and *.suffix patterns) may be cloned from", () => {
+  const allowed = parseAllowedHosts(" github.com, *.corp.example ,bad host!, ");
+  assert.deepEqual(allowed, ["github.com", "*.corp.example"]);
+  const ok = (value) => validateSource({ type: "url", value }, { allowedHosts: allowed }).ok;
+  assert.equal(ok("https://github.com/o/r"), true);
+  assert.equal(ok("https://git.corp.example/o/r"), true);
+  assert.equal(ok("https://corp.example/o/r"), false);
+  assert.equal(ok("https://evilgithub.com/o/r"), false);
+  assert.equal(ok("https://github.com.evil.example/o/r"), false);
+  assert.equal(validateSource({ type: "url", value: "https://anything.example/o/r" }, { allowedHosts: [] }).ok, true, "empty list means any host the policy allows");
+  assert.equal(validateScanRequest({ source: { type: "path", value: "~/x" }, authorized: true, timeoutMinutes: "0x20" }).ok, false);
+  assert.equal(validateScanRequest({ source: { type: "path", value: "~/x" }, authorized: true, timeoutMinutes: [30] }).ok, false);
+  assert.equal(validateScanRequest({ source: { type: "path", value: "~/x" }, authorized: true, timeoutMinutes: "30" }).timeoutMinutes, 30);
+});
+
+test("report: a later sparse row never erases values, escaped pipes and code spans keep their cell, header colon may be bold", () => {
+  const md = [
+    "**Run ID:** r1",
+    "**Model**: m",
+    "",
+    "| ID | Title | CWE | Severity | Runtime | Exploit Test | Measured Impact | Status |",
+    "|---|---|---|---|---|---|---|---|",
+    "| VULN-001 | a \\| b | CWE-89 | High | in-process:node | PASS | 3 of 20 | Confirmed |",
+    "| VULN-002 | uses `x | y` | CWE-79 | Medium | static | PASS | n | Confirmed |",
+    "",
+    "| ID | Title | CWE | Severity | Status |",
+    "|---|---|---|---|---|",
+    "| VULN-001 | a \\| b | CWE-89 | High+ | Fixed |",
+  ].join("\n");
+  const f = parseFindings(md);
+  assert.equal(f.length, 2);
+  const a = f.find((x) => x.id === "VULN-001");
+  assert.equal(a.title, "a | b");
+  assert.equal(a.severity, "High+", "the later row's value wins");
+  assert.equal(a.status, "Fixed");
+  assert.equal(a.runtime, "in-process:node", "an absent column does not erase it");
+  assert.equal(a.exploitTest, "PASS");
+  assert.equal(a.measuredImpact, "3 of 20");
+  assert.equal(f.find((x) => x.id === "VULN-002").severity, "Medium", "a pipe in a code span does not shift the columns");
+  assert.equal(summarizeReport({ report: md, manifestText: "", files: [] }).exploitPass, 2);
+  const h = parseHeader(md);
+  assert.equal(h.runId, "r1");
+  assert.equal(h.model, "m");
 });

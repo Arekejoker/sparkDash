@@ -24,12 +24,37 @@ function normalizeSeverity(raw) {
   return null;
 }
 
-/** `| a | b |` -> ["a", "b"]; null when the line is not a table row. */
+/**
+ * `| a | b |` -> ["a", "b"]; null when the line is not a table row. An escaped pipe (`\|`) and a pipe
+ * inside a backtick code span stay in their cell.
+ */
 function splitRow(line) {
   const t = line.trim();
   if (!t.startsWith("|")) return null;
-  const cells = t.replace(/^\|/, "").replace(/\|$/, "").split("|");
-  return cells.map((c) => c.trim());
+  const cells = [];
+  let cur = "";
+  let inCode = false;
+  for (let i = 1; i < t.length; i++) {
+    const ch = t[i];
+    if (ch === "\\" && t[i + 1] === "|") {
+      cur += "|";
+      i += 1;
+    } else if (ch === "`") {
+      inCode = !inCode;
+      cur += ch;
+    } else if (ch === "|" && !inCode) {
+      cells.push(cur.trim());
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  if (inCode) {
+    // An unclosed backtick: do not let it swallow the rest of the row.
+    return t.replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+  }
+  if (cur.trim() !== "" || !t.endsWith("|")) cells.push(cur.trim());
+  return cells;
 }
 
 const isSeparator = (cells) => cells.length > 0 && cells.every((c) => /^:?-{2,}:?$/.test(c.replace(/\s/g, "")));
@@ -39,7 +64,7 @@ export function parseHeader(markdown) {
   const out = {};
   const head = String(markdown ?? "").split("\n").slice(0, 40);
   for (const line of head) {
-    const m = /^\*\*([A-Za-z ]{2,30})\*\*\s*:\s*(.+)$/.exec(line.trim());
+    const m = /^\*\*([A-Za-z ]{2,30}?)(?:\*\*\s*:|:\*\*)\s*(.+)$/.exec(line.trim());
     if (m) out[m[1].trim().toLowerCase()] = clip(m[2], 300);
   }
   return {
@@ -93,8 +118,14 @@ export function parseFindings(markdown) {
       status: get("status") || null,
     };
     const prev = byId.get(id);
-    // A later, fuller row (the README table repeats the summary) wins over an earlier sparse one.
-    if (!prev || finding.title.length >= prev.title.length) byId.set(id, { ...prev, ...finding });
+    if (!prev) {
+      byId.set(id, finding);
+    } else {
+      // The README table repeats the summary: a later value wins, an empty one never erases an earlier value.
+      const merged = { ...prev };
+      for (const [k, v] of Object.entries(finding)) if (v !== null && v !== "") merged[k] = v;
+      byId.set(id, merged);
+    }
     if (byId.size >= MAX_FINDINGS) break;
   }
   return [...byId.values()];

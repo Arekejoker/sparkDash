@@ -1,4 +1,13 @@
-import { displayLine, scanArgv, validateScanRequest, DEFAULT_TIMEOUT_MINUTES, MAX_TIMEOUT_MINUTES, MIN_TIMEOUT_MINUTES } from "./validate.js";
+import { configuredToken, isLoopbackBind } from "../auth.js";
+import {
+  displayLine,
+  parseAllowedHosts,
+  scanArgv,
+  validateScanRequest,
+  DEFAULT_TIMEOUT_MINUTES,
+  MAX_TIMEOUT_MINUTES,
+  MIN_TIMEOUT_MINUTES,
+} from "./validate.js";
 import { HOST_CMD_FILE, runDirRef } from "./commands.js";
 import { isValidRunId, newRunId } from "./VulnHuntStore.js";
 
@@ -21,13 +30,22 @@ export const SETUP = {
  *   GET  …/runs/:rid, …/stream, …/report             one scan, its live output, its parsed report
  *   POST …/runs/:rid/(attach|stop|refresh), DELETE …/runs/:rid, DELETE …/watch
  *
- * Like every route here it is exactly as protected as the dashboard (SPARKDASH_TOKEN, bind
- * address). A scan clones a repository and lets an agent harness work on it, so the request
- * needs an explicit authorization attestation, and the harness command itself is never taken
- * from the request: it is read from a file the unit's user owns.
+ * A scan clones a repository and lets an agent harness work on it, as the unit's user, so
+ * unlike the read-only routes it is NOT offered on an open dashboard: starting one needs
+ * SPARKDASH_TOKEN, or a loopback bind. The request carries an explicit authorization
+ * attestation (kept on the run record with a time and the requester), the harness command is
+ * never taken from the request (it is read from a file the unit's user owns), and
+ * VULNHUNT_ALLOWED_HOSTS can pin the hosts a scan may clone from.
  */
-export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun, principalKey, rejectLimited }) {
+export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun, principalKey, rejectLimited, bindHost = process.env.BIND_HOST || "127.0.0.1" }) {
   const base = "/api/sparks/:id/vulnhunt";
+
+  /** Starting scans needs an authenticated dashboard (a token) or one only this machine can reach. */
+  const startGate = () =>
+    configuredToken() || isLoopbackBind(bindHost)
+      ? null
+      : "Starting scans needs SPARKDASH_TOKEN to be set (or a dashboard bound to loopback): without it anyone who can reach this port could run an agent on your units.";
+  const allowedHosts = () => parseAllowedHosts(process.env.VULNHUNT_ALLOWED_HOSTS);
 
   const sparkOr404 = (req, res) => {
     const spark = registry.getSpark(req.params.id);
@@ -35,8 +53,8 @@ export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun
       res.status(404).json({ error: "Spark not found" });
       return null;
     }
-    if (spark.platform === "windows") {
-      res.status(400).json({ error: "VulnHunter scans are not supported on Windows units" });
+    if (spark.platform && spark.platform !== "linux") {
+      res.status(400).json({ error: `VulnHunter scans are only supported on Linux units (this one is ${String(spark.platform).slice(0, 20)})` });
       return null;
     }
     return spark;
@@ -61,6 +79,9 @@ export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun
       ...SETUP,
       hostCommandFile: HOST_CMD_FILE.replace("$HOME", "~"),
       limits: { defaultTimeoutMinutes: DEFAULT_TIMEOUT_MINUTES, minTimeoutMinutes: MIN_TIMEOUT_MINUTES, maxTimeoutMinutes: MAX_TIMEOUT_MINUTES },
+      startAllowed: startGate() == null,
+      startBlockedReason: startGate(),
+      allowedHosts: allowedHosts(),
     });
   });
 
@@ -82,8 +103,13 @@ export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun
     const spark = sparkOr404(req, res);
     if (!spark) return;
     if (limited(req, res)) return;
-    const request = validateScanRequest(req.body);
+    const blocked = startGate();
+    if (blocked) return res.status(403).json({ error: blocked });
+    const request = validateScanRequest(req.body, { allowedHosts: allowedHosts() });
     if (!request.ok) return res.status(400).json({ error: request.error });
+    // Checked before anything is stored: a refused request must not evict history.
+    const free = manager.canStart(spark);
+    if (!free.ok) return res.status(409).json({ error: "Another VulnHunter job is running on this unit. Wait for it or stop it first.", active: free.active });
 
     const id = newRunId();
     const run = {
@@ -98,6 +124,7 @@ export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun
       source: { type: request.kind, value: request.value },
       readOnly: request.readOnly,
       timeoutMinutes: request.timeoutMinutes,
+      authorization: { at: Date.now(), by: String(principalKey(req)).slice(0, 100) },
       command: displayLine(request),
       runDir: runDirRef(id),
       summary: null,
@@ -175,6 +202,10 @@ export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun
     const run = runOr404(req, res, spark);
     if (!run) return;
     let bundle = store.loadBundle(run.id);
+    if (!bundle && run.status === "running") {
+      // A report read mid-scan could cache a partial result.
+      return res.status(409).json({ error: "The scan is still running; its report is read when it finishes.", reason: "running" });
+    }
     if (!bundle) {
       if (limited(req, res)) return;
       const captured = await manager.captureResult(spark, run.id);
@@ -196,7 +227,9 @@ export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun
     if (limited(req, res)) return;
     const live = manager.activeJob(spark.id);
     const force = req.query.force === "1" || req.query.force === "true";
-    if (run.status === "running" || (live && live.id === run.id && live.kind === "run")) {
+    const maybeRunning = run.status === "running" || (live && live.id === run.id && live.kind === "run");
+    let reachable = Boolean(spark.online);
+    if (maybeRunning) {
       let state = "unknown";
       if (spark.online) {
         try {
@@ -206,12 +239,19 @@ export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun
         }
       }
       if (state === "running" && !force) return res.status(409).json({ error: "Stop the scan before deleting it." });
-      if (!force && state === "unknown" && spark.online) {
-        return res.status(409).json({ error: "Could not confirm the scan has ended. Stop it, or delete again with force.", canForce: true });
+      if (!force && state === "unknown") {
+        const why = spark.online ? "Could not confirm the scan has ended." : "The unit is offline, so the scan may still be running there.";
+        return res.status(409).json({ error: `${why} Stop it, or delete again with force.`, canForce: true });
       }
       if (live && live.id === run.id) manager.cancelWatch(spark.id);
+      // A forced delete must not leave the hunt running unseen on the unit: stop it first. An offline
+      // unit gets one short attempt (it may only be a stale status), and is cleaned up if it answered.
+      if (state !== "finished" && state !== "gone") {
+        const stopped = await manager.stopRun(spark, run.id, { timeoutMs: spark.online ? undefined : 8000 });
+        if (stopped.ok) reachable = true;
+      }
     }
-    await manager.deleteRun(spark.online ? spark : null, run.id);
+    await manager.deleteRun(reachable ? spark : null, run.id);
     res.json({ success: true });
   });
 
