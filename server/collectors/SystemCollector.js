@@ -7,23 +7,36 @@ import { sshExec } from "./ssh.js";
 
 // Discover models in private vLLM containers on remote Linux units.
 // Read only; no port publication, container changes, or inference requests.
+// Each container is parsed and probed in its own try block, so one odd
+// container never drops the models found in the others.
 const RESIDENT_MODELS_CMD = `python3 - <<'PY'
 import json, subprocess, urllib.request, shlex
 try:
     ids = subprocess.check_output(['docker', 'ps', '-q'], timeout=3, text=True).split()
     containers = json.loads(subprocess.check_output(['docker', 'inspect', *ids], timeout=3, text=True)) if ids else []
-    models = []
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    for c in containers:
+except Exception:
+    print('[]')
+    raise SystemExit(0)
+models = []
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+for c in containers:
+    try:
         if 'vllm' not in c.get('Config', {}).get('Image', '').lower():
             continue
-        args = shlex.split(' '.join(c.get('Config', {}).get('Cmd') or []))
+        cmd = c.get('Config', {}).get('Cmd') or []
+        try:
+            args = shlex.split(' '.join(cmd))
+        except ValueError:
+            args = list(cmd)
         port = 8000
-        if '--port' in args:
-            port = int(args[args.index('--port') + 1])
-        for arg in args:
-            if arg.startswith('--port='):
+        for i, arg in enumerate(args):
+            if arg == '--port' and i + 1 < len(args):
+                port = int(args[i + 1])
+            elif arg.startswith('--port='):
                 port = int(arg.split('=', 1)[1])
+        if not 0 < port < 65536:
+            continue
+        name = str(c.get('Name', '')).lstrip('/')
         addresses = [n.get('IPAddress') for n in c.get('NetworkSettings', {}).get('Networks', {}).values() if n.get('IPAddress')]
         for address in addresses:
             try:
@@ -31,13 +44,13 @@ try:
                     data = json.load(r)
                 for model in data.get('data', []):
                     if isinstance(model.get('id'), str):
-                        models.append({'modelId': model['id'], 'container': c['Name'].lstrip('/')})
+                        models.append({'modelId': model['id'], 'container': name})
                 break
             except Exception:
                 continue
-    print(json.dumps(models))
-except Exception:
-    print('[]')
+    except Exception:
+        continue
+print(json.dumps(models))
 PY`;
 import { RoceSampler } from "./roce.js";
 import {
