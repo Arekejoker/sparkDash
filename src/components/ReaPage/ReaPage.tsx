@@ -36,6 +36,7 @@ function Workspace({ spark, spec: specState }: { spark: SparkSnapshot; spec: Ret
 
   const status = useReaStatus(spark.id, active);
   const install = useReaInstall(spark.id, active, status.reload);
+  const ghidraInstall = useReaInstall(spark.id, active, status.reload, "ghidra");
   const [workflow, setWorkflow] = useState<ReaWorkflowSpec | null>(null);
   const [viewedId, setViewedId] = useState<string | null>(null);
   const [resultVersion, setResultVersion] = useState(0);
@@ -115,6 +116,7 @@ function Workspace({ spark, spec: specState }: { spark: SparkSnapshot; spec: Ret
         statusError={active ? status.error : null}
         loading={status.loading}
         install={install}
+        ghidraInstall={ghidraInstall}
         onRecheck={() => void status.reload()}
       />
 

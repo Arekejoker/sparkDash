@@ -11,10 +11,12 @@ import {
   fetchReaSpec,
   fetchReaStatus,
   installRea,
+  installReaGhidra,
   onReaForbidden,
   listReaRuns,
   putReaUploadFile,
   readReaInstallStream,
+  readReaGhidraInstallStream,
   readReaStream,
   refreshReaRun,
   startReaRun,
@@ -134,7 +136,10 @@ export interface InstallError {
 }
 const toInstallError = (e: unknown): InstallError => ({ message: msg(e), status: e instanceof ReaApiError ? e.status : null });
 
-export function useReaInstall(sparkId: string, active: boolean, onDone: () => void) {
+/** The REA install, or (`engine: "ghidra"`) the Ghidra install: the same streamed job with its own endpoints. */
+export function useReaInstall(sparkId: string, active: boolean, onDone: () => void, engine: "rea" | "ghidra" = "rea") {
+  const readStream = engine === "ghidra" ? readReaGhidraInstallStream : readReaInstallStream;
+  const startInstall = engine === "ghidra" ? installReaGhidra : installRea;
   const [job, setJob] = useState<ReaJob | null>(null);
   const [lines, setLines] = useState<ReaLine[]>([]);
   const [partial, setPartial] = useState("");
@@ -167,7 +172,7 @@ export function useReaInstall(sparkId: string, active: boolean, onDone: () => vo
   useEffect(() => {
     if (!active) return;
     let off = false;
-    readReaInstallStream(sparkId, 0)
+    readStream(sparkId, 0)
       .then((r) => {
         if (off || followedRef.current || !r || r.job.status !== "running") return;
         follow(r.job, r.lines, r.nextLine);
@@ -179,7 +184,7 @@ export function useReaInstall(sparkId: string, active: boolean, onDone: () => vo
     return () => {
       off = true;
     };
-  }, [sparkId, active, follow]);
+  }, [sparkId, active, follow, readStream]);
 
   useEffect(() => {
     if (!running || !jobId) return;
@@ -187,7 +192,7 @@ export function useReaInstall(sparkId: string, active: boolean, onDone: () => vo
     let timer: number | undefined;
     const tick = async () => {
       try {
-        const r = await readReaInstallStream(sparkId, sinceRef.current);
+        const r = await readStream(sparkId, sinceRef.current);
         if (off) return;
         if (!r) {
           setJob((p) => (p ? { ...p, status: "detached", error: "The dashboard no longer has this install job (it may have restarted). Check the unit again." } : p));
@@ -214,13 +219,13 @@ export function useReaInstall(sparkId: string, active: boolean, onDone: () => vo
       off = true;
       window.clearTimeout(timer);
     };
-  }, [sparkId, running, jobId]);
+  }, [sparkId, running, jobId, readStream]);
 
   const start = useCallback(async (): Promise<boolean> => {
     setError(null);
     setStarting(true);
     try {
-      const r = await installRea(sparkId);
+      const r = await startInstall(sparkId);
       if (!mountedRef.current) return true;
       follow(r.job);
       return true;
@@ -230,7 +235,7 @@ export function useReaInstall(sparkId: string, active: boolean, onDone: () => vo
     } finally {
       if (mountedRef.current) setStarting(false);
     }
-  }, [sparkId, follow]);
+  }, [sparkId, follow, startInstall]);
 
   return { job, lines, partial, error, starting, running, start };
 }
