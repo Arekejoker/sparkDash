@@ -434,17 +434,19 @@ VulnHunter is an agentic tool: the hunt itself is done by an agent harness and m
    ```
    (`VULNHUNT_HOST_CMD` in the unit user's environment works too.) The Security page's setup card shows what is missing and the exact lines to run; only the program name of the harness command is ever shown.
 
-**What a scan does**: clone (`vh clone`, or a shallow clone of a checkout under the unit user's home) → `vh host` with the `/vulnhunt <checkout>` prompt, the same headless prompt VulnHunter's benchmark harness uses → find the new `*_VULNHUNT_RESULTS_*` folder → `vh write-manifest` / `validate-manifest`. The report is parsed into findings (id, title, CWE, severity, runtime, exploit-test result, measured impact) and the PoC / exploit-test file list. The hunt has a time limit (default 4 h) and can be stopped from the page.
+**What a scan does**: clone (`vh clone`, or a shallow clone of a checkout under the unit user's home) → `vh host` with the `/vulnhunt <checkout>` prompt, the same headless prompt VulnHunter's benchmark harness uses → find the new `*_VULNHUNT_RESULTS_*` folder → `vh write-manifest` / `validate-manifest`. The report is parsed into findings (id, title, CWE, severity, runtime, exploit-test result, measured impact) and the PoC / exploit-test file list. One time limit (default 4 h) covers the whole scan, clone included; a scan can be stopped from the page. When it ends the clone is deleted and only the results folder is kept on the unit (`~/.cache/sparkdash/vulnhunt/<run>/results`), with the run's files private to the unit's user. Deleting a run removes them. Needs `vh`, `git`, `setsid` and `python3` on the unit.
 
-**Safety**
-- VulnHunter performs dual-use security work. Every scan needs an explicit "I am authorized to scan this code" confirmation, and the page says so.
-- Scans are **read-only by default**: the prompt tells the harness not to fetch dependencies or execute code. That is an instruction to your harness, not a sandbox, so use a harness or container that confines the agent if you need a guarantee. Allowing execution is a separate, explicitly confirmed choice, because exploit tests then run on the unit.
-- Sources are limited to `https://` git URLs (no credentials, no link-local or metadata hosts) and paths under the unit user's home. On the Spark that runs sparkDash, scans run as the SSH user, never as root.
-- The report is agent-written text from untrusted code: it is shown as plain text, never rendered as HTML. A results folder that came with the repository, or a README that is a symlink, is not accepted as a result.
-- Like every action in sparkDash, starting a scan is only as protected as the dashboard (`SPARKDASH_TOKEN`, bind address). Anyone who can reach the API can start a scan on a unit with this set up.
+**Safety, and what it does not promise**
+- **Who can start a scan.** A scan runs an agent on your unit as its SSH user, so it is only offered when the dashboard is authenticated: `SPARKDASH_TOKEN` is set, or the bind is loopback. On an open network bind the page says so and the API answers 403. `VULNHUNT_ALLOWED_HOSTS` (comma-separated, `*.example.org` allowed) pins the hosts a scan may clone from; empty means any host the policy below allows.
+- **Authorization.** VulnHunter performs dual-use security work. Every scan needs an explicit "I am authorized to scan this code" confirmation, and the requester and time are kept on the run record.
+- **Read-only is a request, not a sandbox.** The default prompt tells the harness not to fetch dependencies or execute code. A repository (or the agent's own output) can try to steer the agent, so if you need a guarantee run the harness in a container or under a user that cannot reach anything you care about. Allowing execution is a separate, explicitly confirmed choice, because exploit tests then run on the unit. The harness is started inside the clone, so project-level config a repository ships (hooks, MCP servers, agent instruction files) is visible to harnesses that read it from the working directory.
+- **Sources.** `https://` git URLs (no credentials) or paths under the unit user's home. Names and addresses of cloud metadata services are refused, including IPv6 forms that embed them; private, loopback and tailnet hosts are allowed because self-hosted git servers are the common case. This is a best-effort policy: a DNS name can still resolve anywhere, so pin hosts with `VULNHUNT_ALLOWED_HOSTS` when that matters. The clone ignores the user's global git config (credential helpers, `insteadOf`), follows no HTTP redirect, runs no hooks and fetches no LFS objects. On the Spark that runs sparkDash, scans run as the SSH user, never as root.
+- **Reports are untrusted.** The report is agent-written text derived from untrusted code: it is shown as plain text, never rendered as HTML. A results folder that came with the repository, a symlinked results folder or a README that is a symlink is not accepted as a result.
+- **Process control.** Stop and the time limit signal the scan's whole session. A harness or helper that deliberately starts its own session escapes both. For the unit that runs the dashboard in a container, stopping the container may end a scan that was started from inside it; scans on remote units are unaffected.
+- **Output limits.** The log on the unit is trimmed when it passes 64 MiB, and the page keeps the most recent 2 MiB of it.
 - Private repositories: clone them on the unit first and scan the checkout path.
 
-Runs are kept in `config/vulnhunt-runs.json` (up to 100) and `config/vulnhunt-results/`; both can be moved with `VULNHUNT_RUNS_PATH` and `VULNHUNT_RESULTS_DIR`. Windows units are not supported.
+Runs are kept in `config/vulnhunt-runs.json` (up to 100) and `config/vulnhunt-results/` (both git-ignored); move them with `VULNHUNT_RUNS_PATH` and `VULNHUNT_RESULTS_DIR`. Linux units only.
 
 ## Prometheus
 
@@ -793,6 +795,8 @@ Copy `.env.example` to `.env` if needed:
 | `SPARKDASH_TOKEN` | _(empty)_ | Bearer token. When set, it is required for every mutation and WebSocket connection, and for REST reads on a non-loopback bind. The browser prompts for it when needed (Settings → Access token to change it). |
 | `SPARKDASH_ALLOW_OPEN_REMOTE` | `1` | Unset, empty, or `1`: a non-loopback bind without `SPARKDASH_TOKEN` stays open. `0`: refuse to start without a token (fail closed). |
 | `SPARKDASH_ALLOWED_HOSTS` | _(empty)_ | Only for a reverse proxy on a custom domain: comma-separated names a loopback bind should also answer to. `localhost`, IP addresses, this machine's hostname and its Tailscale name work without it. |
+| `VULNHUNT_ALLOWED_HOSTS` | _(empty)_ | Security scans: comma-separated hosts (`*.example.org` allowed) a scan may clone from. Empty allows any host the clone policy permits. |
+| `VULNHUNT_RUNS_PATH` / `VULNHUNT_RESULTS_DIR` | `config/vulnhunt-runs.json` / `config/vulnhunt-results` | Where Security scan history and cached reports are kept. |
 | `PORT` | `5555` | HTTP + WebSocket listen port |
 | `LLM_PORT` | `8888` | Default LLM probe port |
 | `COMFY_PORT` | `8188` | Default ComfyUI probe port |
