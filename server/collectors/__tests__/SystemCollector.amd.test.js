@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { SystemCollector, parseAmdSmiMetrics } from "../SystemCollector.js";
+import { SystemCollector, parseAmdSmiMetrics, splitRemoteGpuSections } from "../SystemCollector.js";
 
 const amdMetrics = {
   gpu_data: [{
@@ -160,4 +160,30 @@ test("legacy Windows collector output preserves the fourth meminfo section", asy
   const gpu = await collector._getRemoteGpu(async () => output);
   assert.equal(gpu.vram.total, 65536);
   assert.equal(gpu.gpus[0].vram.total, 65536);
+});
+
+test("remote sections survive a double underscore inside a GPU name and amd-smi JSON", async () => {
+  const collector = new SystemCollector({ id: "dunder", kind: "host", isLocal: false });
+  collector._nvErrNoMemory = async () => 0;
+  collector._kernelErrors = async () => null;
+  const nvidia = "51,12,110,250,1500,2500,0,0,0,0,0,NVIDIA__RTX__A6000,GPU-AAA";
+  const amd = { gpu_data: [{ ...amdMetrics.gpu_data[0], name: "AMD__Radeon__R9700" }] };
+  const output = [
+    "", "__NVIDIA__", nvidia,
+    "", "__NVIDIA_VRAM__", "100,24576",
+    "", "__NVIDIA_APPS__",
+    "", "__AMD__", JSON.stringify(amd, null, 2),
+    "", "__AMD_LIMITS__", JSON.stringify(amdLimits),
+    "", "__MEMINFO__", "MemTotal: 131072000 kB\nMemAvailable: 65536000 kB",
+  ].join("\n");
+  const gpu = await collector._getRemoteGpu(async () => output);
+  assert.deepEqual(gpu.gpus.map((d) => d.name), ["NVIDIA__RTX__A6000", "AMD__Radeon__R9700"]);
+  assert.equal(gpu.gpus[1].power.limit, 300);
+  assert.equal(gpu.vram.total, 24576 + 32624);
+});
+
+test("splitRemoteGpuSections only breaks on whole-line known markers", () => {
+  const sections = splitRemoteGpuSections("noise\r\n__AMD__\r\n{\"n\": \"a__b\"}\r\n__FOO__\r\n__MEMINFO__\r\nMemTotal: 1 kB\r\n");
+  assert.deepEqual(Object.keys(sections), ["AMD", "MEMINFO"]);
+  assert.equal(sections.AMD, "{\"n\": \"a__b\"}\n__FOO__");
 });

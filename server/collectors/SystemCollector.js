@@ -117,6 +117,27 @@ export function parseAmdSmiMetrics(raw, limitRaw = null) {
   });
 }
 
+const REMOTE_GPU_SECTIONS = new Set(["NVIDIA", "NVIDIA_VRAM", "NVIDIA_APPS", "AMD", "AMD_LIMITS", "MEMINFO"]);
+
+/**
+ * Split the remote GPU probe output into named sections. A section starts at a
+ * line that is exactly one of the known `__NAME__` markers; anything else (JSON,
+ * GPU names, even ones containing "__") is section content.
+ */
+export function splitRemoteGpuSections(output) {
+  const sections = {};
+  let current = null;
+  const lines = [];
+  const flush = () => { if (current) sections[current] = lines.join("\n").trim(); lines.length = 0; };
+  for (const line of String(output ?? "").split(/\r?\n/)) {
+    const m = /^__([A-Z_]+)__$/.exec(line.trim());
+    if (m && REMOTE_GPU_SECTIONS.has(m[1])) { flush(); current = m[1]; continue; }
+    if (current) lines.push(line);
+  }
+  flush();
+  return sections;
+}
+
 const AMD_GPU_FIELDS = ["temperature", "usage", "powerDraw", "powerLimit", "vramUsed", "vramTotal"];
 const AMD_SMI_RESOLVER = [
   'amd_smi="${AMD_SMI_PATH:-}"',
@@ -1436,20 +1457,14 @@ export class SystemCollector {
   async _getRemoteGpu(executor = sshExec) {
     try {
       const cmd = [
-        "if command -v nvidia-smi >/dev/null 2>&1; then printf '__NVIDIA__\\n'; nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,power.draw,power.limit,clocks.current.sm,clocks.max.sm,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.sw_thermal_slowdown,clocks_throttle_reasons.hw_slowdown,clocks_throttle_reasons.sw_power_cap,index,name,uuid --format=csv,noheader,nounits 2>/dev/null; printf '__NVIDIA_VRAM__\\n'; nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null; printf '__NVIDIA_APPS__\\n'; nvidia-smi --query-compute-apps=pid,process_name,used_gpu_memory,gpu_uuid --format=csv,noheader,nounits 2>/dev/null; fi",
-        `${AMD_SMI_RESOLVER}; if [ -n "$amd_smi" ]; then printf '__AMD__\\n'; "$amd_smi" metric -u -p -m -t --json 2>/dev/null; printf '__AMD_LIMITS__\\n'; "$amd_smi" static -l --json 2>/dev/null; fi`,
-        "printf '__MEMINFO__\\n'; grep -E 'MemTotal|MemAvailable' /proc/meminfo 2>/dev/null",
+        "if command -v nvidia-smi >/dev/null 2>&1; then printf '\\n__NVIDIA__\\n'; nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,power.draw,power.limit,clocks.current.sm,clocks.max.sm,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.sw_thermal_slowdown,clocks_throttle_reasons.hw_slowdown,clocks_throttle_reasons.sw_power_cap,index,name,uuid --format=csv,noheader,nounits 2>/dev/null; printf '\\n__NVIDIA_VRAM__\\n'; nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null; printf '\\n__NVIDIA_APPS__\\n'; nvidia-smi --query-compute-apps=pid,process_name,used_gpu_memory,gpu_uuid --format=csv,noheader,nounits 2>/dev/null; fi",
+        `${AMD_SMI_RESOLVER}; if [ -n "$amd_smi" ]; then printf '\\n__AMD__\\n'; "$amd_smi" metric -u -p -m -t --json 2>/dev/null; printf '\\n__AMD_LIMITS__\\n'; "$amd_smi" static -l --json 2>/dev/null; fi`,
+        "printf '\\n__MEMINFO__\\n'; grep -E 'MemTotal|MemAvailable' /proc/meminfo 2>/dev/null",
       ].join("; ");
 
       const output = await executor(this.spark, cmd);
-      const section = (name) => {
-        const marker = `__${name}__`;
-        const start = String(output).indexOf(marker);
-        if (start < 0) return "";
-        const from = start + marker.length;
-        const next = String(output).indexOf("__", from);
-        return String(output).slice(from, next < 0 ? undefined : next).trim();
-      };
+      const sections = splitRemoteGpuSections(output);
+      const section = (name) => sections[name] ?? "";
       const gpuOut = section("NVIDIA");
       const memFields = section("NVIDIA_VRAM");
       const computeOut = section("NVIDIA_APPS");
@@ -1457,7 +1472,7 @@ export class SystemCollector {
       const amdLimits = section("AMD_LIMITS");
       const meminfoOut = section("MEMINFO");
       // Keep compatibility with existing injected executor fixtures and older command results.
-      const legacy = !String(output).includes("__MEMINFO__");
+      const legacy = !("MEMINFO" in sections);
       const legacySections = legacy ? String(output).split("---") : [];
       const resolvedMeminfo = legacy ? (legacySections[3] || "").trim() : meminfoOut;
       const cliDevices = this._parseGpuLines(legacy ? (legacySections[0] || "") : gpuOut, {
