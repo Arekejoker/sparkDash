@@ -9,20 +9,41 @@ import { sshExec } from "./ssh.js";
 // Read only; no port publication, container changes, or inference requests.
 // Each container is parsed and probed in its own try block, so one odd
 // container never drops the models found in the others.
+//
+// The output comes from a remote host, so it is bounded twice: here in the
+// script, and again when the collector parses it. The script also has to
+// finish well inside sshExec's 10 s default, or it is killed and the card
+// flaps: docker calls are capped at 2 s each, the container loop stops after
+// RESIDENT_MODELS_BUDGET_S, and every HTTP request is 1 s with a bounded read.
+const RESIDENT_MODELS_MAX = 50; // models kept
+const RESIDENT_MODELS_MAX_CONTAINERS = 20; // vLLM containers probed
+const RESIDENT_MODELS_MAX_LEN = 200; // chars per model id / container name
+const RESIDENT_MODELS_MAX_BODY = 64 * 1024; // bytes read from /v1/models
+const RESIDENT_MODELS_BUDGET_S = 5;
 const RESIDENT_MODELS_CMD = `python3 - <<'PY'
-import json, subprocess, urllib.request, shlex
+import json, subprocess, time, urllib.request, shlex
+T0 = time.monotonic()
+MAX_MODELS = ${RESIDENT_MODELS_MAX}
+MAX_CONTAINERS = ${RESIDENT_MODELS_MAX_CONTAINERS}
+MAX_LEN = ${RESIDENT_MODELS_MAX_LEN}
+MAX_BODY = ${RESIDENT_MODELS_MAX_BODY}
+BUDGET = ${RESIDENT_MODELS_BUDGET_S}
 try:
-    ids = subprocess.check_output(['docker', 'ps', '-q'], timeout=3, text=True).split()
-    containers = json.loads(subprocess.check_output(['docker', 'inspect', *ids], timeout=3, text=True)) if ids else []
+    ids = subprocess.check_output(['docker', 'ps', '-q'], timeout=2, text=True).split()[:200]
+    containers = json.loads(subprocess.check_output(['docker', 'inspect', *ids], timeout=2, text=True)) if ids else []
 except Exception:
     print('[]')
     raise SystemExit(0)
 models = []
+probed = 0
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 for c in containers:
+    if len(models) >= MAX_MODELS or probed >= MAX_CONTAINERS or time.monotonic() - T0 > BUDGET:
+        break
     try:
         if 'vllm' not in c.get('Config', {}).get('Image', '').lower():
             continue
+        probed += 1
         cmd = c.get('Config', {}).get('Cmd') or []
         try:
             args = shlex.split(' '.join(cmd))
@@ -36,15 +57,17 @@ for c in containers:
                 port = int(arg.split('=', 1)[1])
         if not 0 < port < 65536:
             continue
-        name = str(c.get('Name', '')).lstrip('/')
+        name = str(c.get('Name', '')).lstrip('/')[:MAX_LEN]
         addresses = [n.get('IPAddress') for n in c.get('NetworkSettings', {}).get('Networks', {}).values() if n.get('IPAddress')]
         for address in addresses:
+            if time.monotonic() - T0 > BUDGET:
+                break
             try:
-                with opener.open('http://%s:%s/v1/models' % (address, port), timeout=2) as r:
-                    data = json.load(r)
+                with opener.open('http://%s:%s/v1/models' % (address, port), timeout=1) as r:
+                    data = json.loads(r.read(MAX_BODY))
                 for model in data.get('data', []):
-                    if isinstance(model.get('id'), str):
-                        models.append({'modelId': model['id'], 'container': name})
+                    if isinstance(model.get('id'), str) and model['id'] and len(models) < MAX_MODELS:
+                        models.append({'modelId': model['id'][:MAX_LEN], 'container': name})
                 break
             except Exception:
                 continue
@@ -224,9 +247,16 @@ export class SystemCollector {
     if (this.spark.isLocal || this.spark.platform === "windows" || this.spark.platform === "darwin") return [];
     try {
       const value = JSON.parse(await execute(this.spark, RESIDENT_MODELS_CMD));
-      return Array.isArray(value)
-        ? value.filter((m) => typeof m?.modelId === "string" && typeof m?.container === "string")
-        : [];
+      if (!Array.isArray(value)) return [];
+      const text = (v) => (typeof v === "string" && v ? v.slice(0, RESIDENT_MODELS_MAX_LEN) : null);
+      const out = [];
+      for (const m of value) {
+        const modelId = text(m?.modelId);
+        const container = text(m?.container);
+        if (modelId && container) out.push({ modelId, container });
+        if (out.length >= RESIDENT_MODELS_MAX) break;
+      }
+      return out;
     } catch {
       return [];
     }
