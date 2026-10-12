@@ -32,8 +32,7 @@ try:
     ids = subprocess.check_output(['docker', 'ps', '-q'], timeout=2, text=True).split()[:200]
     containers = json.loads(subprocess.check_output(['docker', 'inspect', *ids], timeout=2, text=True)) if ids else []
 except Exception:
-    print('[]')
-    raise SystemExit(0)
+    raise SystemExit(1)
 models = []
 probed = 0
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -243,11 +242,16 @@ const REMOTE_IO_MARKER = "---sparkdash-block-io---";
 const DISK_RATE_MIN_WINDOW_MS = 250;
 
 export class SystemCollector {
-  async collectResidentModels(execute = sshExec) {
+  /**
+   * Loaded models in private vLLM containers. Resolves to an array (empty when
+   * there are none) or to null when discovery itself failed (SSH or docker
+   * error, unparsable output), so a caller can tell "none" from "unknown".
+   */
+  async probeResidentModels(execute = sshExec) {
     if (this.spark.isLocal || this.spark.platform === "windows" || this.spark.platform === "darwin") return [];
     try {
       const value = JSON.parse(await execute(this.spark, RESIDENT_MODELS_CMD));
-      if (!Array.isArray(value)) return [];
+      if (!Array.isArray(value)) return null;
       const text = (v) => (typeof v === "string" && v ? v.slice(0, RESIDENT_MODELS_MAX_LEN) : null);
       const out = [];
       for (const m of value) {
@@ -258,9 +262,15 @@ export class SystemCollector {
       }
       return out;
     } catch {
-      return [];
+      return null;
     }
   }
+
+  /** Like probeResidentModels, but an unknown result is an empty list. */
+  async collectResidentModels(execute = sshExec) {
+    return (await this.probeResidentModels(execute)) ?? [];
+  }
+
   constructor(spark) {
     this.spark = spark;
     this._nvidiaSmiPath = this._resolveNvidiaSmiPath();

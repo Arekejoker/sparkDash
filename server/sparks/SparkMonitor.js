@@ -36,6 +36,8 @@ const FAST_TIMER_DOMAINS = ["gpu", "cpu", "network", "ram", "memory"];
  * change rarely, and it is an SSH exec rather than an HTTP probe.
  */
 const RESIDENT_MODELS_POLL_MS = 30_000;
+/** A failed discovery keeps the last list this long (three polls) before it is cleared. */
+const RESIDENT_MODELS_GRACE_MS = 3 * RESIDENT_MODELS_POLL_MS;
 
 /**
  * Liveness retry schedule. Network failures widen gradually — a rebooting host
@@ -825,6 +827,8 @@ export class SparkMonitor {
         return Array.isArray(result?.interfaces) && result.interfaces.length > 0;
       case "storage":
         return Array.isArray(result) && result.length > 0;
+      case "residentModels":
+        return Array.isArray(result);
       case "llm":
         return Array.isArray(result); // an engine that is down is still a successful probe
       default:
@@ -1000,7 +1004,7 @@ export class SparkMonitor {
       let roce;
       switch (domain) {
         case "residentModels":
-          result = await this.collector.collectResidentModels();
+          result = await this.collector.probeResidentModels(); // null = could not tell
           break;
         case "gpu":
           result = await this.collector.collectGpu();
@@ -1051,7 +1055,13 @@ export class SparkMonitor {
       if (!this._running || this._runGeneration !== runGeneration) return;
       switch (domain) {
         case "residentModels":
-          this._metrics.residentModels = result;
+          // A failed discovery (result null) must neither look like "no models" nor
+          // flap the card: keep the previous list until it is a few polls old.
+          if (result !== null) {
+            this._metrics.residentModels = result;
+          } else if (Date.now() - (this._lastSuccess.residentModels ?? 0) > RESIDENT_MODELS_GRACE_MS) {
+            this._metrics.residentModels = [];
+          }
           break;
         case "gpu":
           this._metrics.gpu = result;
