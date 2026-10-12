@@ -229,3 +229,13 @@ test("a host that has shown AMD data keeps polling amd-smi after a failed read",
   await collector._getGPUAll();
   assert.equal(probes.filter((p) => p.startsWith("metric")).length, 3);
 });
+
+test("NVIDIA with an N/A power.limit keeps the 120 W default shown, as before AMD support", () => {
+  const collector = new SystemCollector({ id: "gb10", isLocal: true });
+  const [d] = collector._parseGpuLines("40,5,12.5,[N/A],1500,2500,0,0,0,0,0,NVIDIA GB10,GPU-AAA");
+  assert.equal(d.powerLimit, 120);
+  assert.equal(d.metricAvailability.powerLimit, true);
+  const agg = collector._aggregateGpuDevices([d]);
+  assert.equal(agg.powerLimit, 120);
+  assert.equal(agg.metricAvailability.powerLimit, true);
+});

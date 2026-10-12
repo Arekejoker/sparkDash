@@ -659,7 +659,9 @@ export class SystemCollector {
           temperature: !windowsAdapter && rawTemperature != null,
           usage: rawUsage != null,
           powerDraw: !windowsAdapter && rawPowerDraw != null,
-          powerLimit: !windowsAdapter && rawPowerLimit != null,
+          // NVIDIA keeps the historical 120 W default for an N/A limit (GB10),
+          // so the limit stays shown; only non-NVIDIA adapters report honestly.
+          powerLimit: !windowsAdapter && (vendor === "nvidia" || rawPowerLimit != null),
           vramUsed: !windowsAdapter,
           vramTotal: !windowsAdapter,
         },
