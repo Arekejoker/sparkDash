@@ -5,7 +5,6 @@ export const TOKENS_ID = "__tokens__";
 export const ENERGY_ID = "__energy__";
 export const ACTIVITY_ID = "__activity__";
 export const SHOWCASE_ID = "__showcase__";
-export const SECURITY_ID = "__security__";
 /** Benchmark pages: the active id is this prefix + the benchmark type (decode, tool-eval, …). */
 export const BENCH_PREFIX = "__bench__:";
 
@@ -15,7 +14,6 @@ const FIXED_PATHS: Record<string, string> = {
   [ENERGY_ID]: "/energy",
   [ACTIVITY_ID]: "/activity",
   [SHOWCASE_ID]: "/showcase",
-  [SECURITY_ID]: "/security",
 };
 
 export function benchId(type: string): string {
@@ -47,6 +45,8 @@ export function pathToId(pathname: string): string | null {
   for (const [id, p] of Object.entries(FIXED_PATHS)) {
     if (p !== "/" && (pathname === p || pathname === `${p}/`)) return id;
   }
+  // The page was briefly a top-level /security route; old links land on the benchmark page.
+  if (pathname === "/security" || pathname === "/security/") return benchId("vulnhunt");
   const bench = pathname.match(/^\/bench\/([a-z0-9-]+)\/?$/);
   if (bench) return benchId(bench[1]);
   const spark = pathname.match(/^\/spark\/([^/]+)/);

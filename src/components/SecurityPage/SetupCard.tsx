@@ -3,10 +3,14 @@ import type { VulnHuntSetup, VulnHuntStatus } from "../../api/types";
 import { CheckIcon, RotateIcon, ShieldIcon, XIcon } from "../ui/icons";
 import { Panel } from "../ui/Panel";
 import { Tag } from "../ui/Tag";
+import { HarnessStep } from "./HarnessStep";
+import { InstallStep } from "./InstallStep";
+import { useVulnHuntHostCommand, useVulnHuntInstall } from "./hooks";
 import { CommandBlock, Notice } from "./parts";
-import { setupProblems } from "./securityLogic";
+import { setupProblems, shortRev } from "./securityLogic";
 
 interface SetupCardProps {
+  sparkId: string;
   unitName: string;
   setup: VulnHuntSetup | null;
   setupError: string | null;
@@ -33,8 +37,10 @@ function harnessDetail(status: VulnHuntStatus): string {
   return where;
 }
 
-/** What the unit has and what is still missing, with the copyable setup steps when it is not ready. */
-export function SetupCard({ unitName, setup, setupError, status, loading, error, onRecheck }: SetupCardProps) {
+/** What the unit has and what is still missing, with the guided install and harness-command steps when it is not ready. */
+export function SetupCard({ sparkId, unitName, setup, setupError, status, loading, error, onRecheck }: SetupCardProps) {
+  const install = useVulnHuntInstall(sparkId, onRecheck);
+  const hc = useVulnHuntHostCommand(sparkId, onRecheck);
   const recheck = (
     <button type="button" className="btn btn--sm btn--ghost" onClick={onRecheck} disabled={loading}>
       <RotateIcon className={`h-3.5 w-3.5${loading ? " sec-spin" : ""}`} /> {loading ? "Checking" : "Check again"}
@@ -59,10 +65,54 @@ export function SetupCard({ unitName, setup, setupError, status, loading, error,
     );
   } else {
     const problems = setupProblems(status);
+    const py = status.install.python311;
+    const outdated = status.installed && !status.install.upToDate;
+    const showInstall = !status.installed || outdated || install.job != null;
+    const manual =
+      setupError ? (
+        <Notice tone="bad" title="Could not load the setup steps">
+          {setupError}
+        </Notice>
+      ) : setup ? (
+        <details className="sec-manual">
+          <summary>Prefer to do it by hand?</summary>
+          <div className="sec-steps">
+            <p className="sec-muted">
+              Run these on {unitName}, in order. VulnHunter comes from{" "}
+              <a href={setup.repository} target="_blank" rel="noopener noreferrer">
+                {setup.repository.replace(/^https:\/\//, "")}
+              </a>
+              ; replace the placeholders in angle brackets with your agent harness settings.
+            </p>
+            <ol className="sec-steps__list">
+              {setup.steps.map((step, i) => (
+                <li key={step}>
+                  <CommandBlock label={`Step ${i + 1}`} command={step} />
+                </li>
+              ))}
+            </ol>
+            <p className="sec-muted">
+              The harness command is read from <code>{setup.hostCommandFile}</code> on the unit, or from the <code>VULNHUNT_HOST_CMD</code>{" "}
+              environment variable. Keep that file private (mode 600). The dashboard only shows the program name, never the command line.
+            </p>
+          </div>
+        </details>
+      ) : null;
     body = (
       <>
         <ul className="sec-checks" aria-label="Setup checklist">
-          <Row ok={status.installed} label="VulnHunter installed" detail={status.installed ? status.path : "not found"} />
+          <Row
+            ok={status.installed}
+            label="VulnHunter installed"
+            detail={
+              status.installed
+                ? [status.install.installedRev ? shortRev(status.install.installedRev) : null, outdated ? "update available" : null, status.path]
+                    .filter(Boolean)
+                    .join(" · ")
+                : "not found"
+            }
+          />
+          <Row ok={py != null} label="Python 3.11 or newer" detail={py ?? "not found"} />
           <Row ok={status.git} label="git available" />
           <Row ok={status.setsid} label="setsid available" />
           <Row
@@ -76,45 +126,24 @@ export function SetupCard({ unitName, setup, setupError, status, loading, error,
             Scans run on {unitName} as the user the dashboard connects with. The harness command is read on the unit and is never shown here.
           </p>
         ) : (
-          <>
-            <Notice tone="warn" title="This unit is not ready to scan yet">
-              <ul className="sec-problems">
-                {problems.map((p) => (
-                  <li key={p}>{p}</li>
-                ))}
-              </ul>
-            </Notice>
-            {setupError ? (
-              <Notice tone="bad" title="Could not load the setup steps">
-                {setupError}
-              </Notice>
-            ) : setup ? (
-              <div className="sec-steps">
-                <p className="sec-muted">
-                  Run these on {unitName}, in order. VulnHunter comes from{" "}
-                  <a href={setup.repository} target="_blank" rel="noopener noreferrer">
-                    {setup.repository.replace(/^https:\/\//, "")}
-                  </a>
-                  ; replace the placeholders in angle brackets with your agent harness settings.
-                </p>
-                <ol className="sec-steps__list">
-                  {setup.steps.map((step, i) => (
-                    <li key={step}>
-                      <CommandBlock label={`Step ${i + 1}`} command={step} />
-                    </li>
-                  ))}
-                </ol>
-                <p className="sec-muted">
-                  The harness command (a headless one-shot of your agent harness) is read from <code>{setup.hostCommandFile}</code> on the unit,
-                  or from the <code>VULNHUNT_HOST_CMD</code> environment variable. Keep that file private (mode 600). The dashboard only
-                  shows the program name, never the command line.
-                </p>
-              </div>
-            ) : (
-              <p className="sec-muted">Loading the setup steps…</p>
-            )}
-          </>
+          <Notice tone="warn" title="This unit is not ready to scan yet">
+            <ul className="sec-problems">
+              {problems.map((p) => (
+                <li key={p}>{p}</li>
+              ))}
+            </ul>
+          </Notice>
         )}
+        {showInstall ? <InstallStep unitName={unitName} setup={setup} setupError={setupError} status={status} install={install} /> : null}
+        {status.ready ? (
+          <details className="sec-manual">
+            <summary>Change the harness command</summary>
+            <HarnessStep unitName={unitName} setup={setup} setupError={setupError} status={status} hc={hc} num={showInstall ? 2 : 1} />
+          </details>
+        ) : (
+          <HarnessStep unitName={unitName} setup={setup} setupError={setupError} status={status} hc={hc} num={showInstall ? 2 : 1} />
+        )}
+        {status.ready ? null : manual}
       </>
     );
   }

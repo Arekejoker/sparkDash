@@ -1,8 +1,12 @@
 import crypto from "crypto";
 import { ToolEvalManager } from "../tooleval/ToolEvalManager.js";
 import {
+  VULNHUNTER_REV,
   exitToken,
   buildAttachProgram,
+  buildClearHostCommandProgram,
+  buildInstallProgram,
+  buildSetHostCommandProgram,
   buildCheckProgram,
   buildDeleteRunProgram,
   buildReadReportProgram,
@@ -18,6 +22,7 @@ const MAX_LINE_CHARS = 8 * 1024;
 const MAX_BUFFER_CHARS = 2 * 1024 * 1024;
 const MAX_BUFFER_LINES = 5000;
 const STOP_TIMEOUT_MS = 70_000;
+const INSTALL_MAX_MS = 15 * 60 * 1000;
 const STAGES = new Set(["clone", "hunt", "collect", "done"]);
 
 /** Exit codes the on-unit wrapper uses, as a sentence. */
@@ -52,9 +57,36 @@ export function explainExit(code) {
  * result capture), with VulnHunter's own programs, stages and report parsing on top.
  */
 export class VulnHuntManager extends ToolEvalManager {
-  /** Tool Eval's installer does not apply: the unit's owner sets VulnHunter up (see the setup steps). */
+  /** Tool Eval's own installer does not apply; VulnHunter has `installVulnHunt`. */
   install() {
     return { ok: false, reason: "unsupported" };
+  }
+
+  /**
+   * Install VulnHunter on the unit (pinned revision, minimal: skill + `vh`), streamed like any job.
+   * @returns {{ ok: true, job: object } | { ok: false, reason: "busy", active: object }}
+   */
+  installVulnHunt(spark, { skillsDir, agentsDir = "", source = {} }) {
+    const free = this.canStart(spark);
+    if (!free.ok) return free;
+    const busy = this.activeJob(spark.id);
+    if (busy) this._detach(busy, spark);
+    const job = this._newJob(spark, { id: `install-${crypto.randomBytes(3).toString("hex")}`, kind: "install", type: "vulnhunt" });
+    this._startJob(spark, job, buildInstallProgram({ skillsDir, agentsDir, nonce: job.nonce, ...source }), { maxMs: INSTALL_MAX_MS });
+    return { ok: true, job };
+  }
+
+  /** Save (or clear) the harness command on the unit. The command is only written, never read back. */
+  async setHostCommand(spark, command) {
+    const nonce = crypto.randomBytes(9).toString("hex");
+    const res = await this.runOnce(spark, buildSetHostCommandProgram({ command, nonce }), { nonce, timeoutMs: 30_000, stdoutOnly: true });
+    return { ok: res.ok, message: res.ok ? null : res.output.split("\n").pop() || res.error || "The unit did not accept the command" };
+  }
+
+  async clearHostCommand(spark) {
+    const nonce = crypto.randomBytes(9).toString("hex");
+    const res = await this.runOnce(spark, buildClearHostCommandProgram({ nonce }), { nonce, timeoutMs: 30_000, stdoutOnly: true });
+    return { ok: res.ok };
   }
 
   summary(job) {
@@ -116,6 +148,20 @@ export class VulnHuntManager extends ToolEvalManager {
       },
       ready: installed && Boolean(kv.GIT) && Boolean(kv.SETSID) && hostConfigured,
       runRoot: kv.RUNROOT || null,
+      install: {
+        pinnedRev: VULNHUNTER_REV,
+        installedRev: /^[0-9a-f]{40}$/.test(kv.INSTALLED_REV ?? "") ? kv.INSTALLED_REV : null,
+        upToDate: kv.INSTALLED_REV === VULNHUNTER_REV,
+        skillsDir: kv.INSTALLED_SKILLS_DIR || null,
+        agentsDir: kv.INSTALLED_AGENTS_DIR || null,
+        python311: kv.PYTHON311 || null,
+        skillsDirCandidates: res.output
+          .split("\n")
+          .filter((l) => l.startsWith("SKILLSDIR="))
+          .map((l) => l.slice("SKILLSDIR=".length).trim())
+          .filter((d) => /^\/[A-Za-z0-9._@+=,/-]{1,300}$/.test(d))
+          .slice(0, 8),
+      },
       error: res.error,
     };
   }
@@ -186,6 +232,17 @@ export class VulnHuntManager extends ToolEvalManager {
   }
 
   async _afterJob(job, spark) {
+    if (job.kind === "install") {
+      if (job.status === "cancelled" || job.status === "detached") return;
+      const ok = job.status === "completed";
+      this.onEvent({
+        type: `vulnhunt.install.${ok ? "completed" : "failed"}`,
+        severity: ok ? "success" : "error",
+        sparkId: job.sparkId,
+        message: ok ? "VulnHunter installed" : "VulnHunter install failed",
+      });
+      return;
+    }
     const run = this.store.get(job.id);
     if (!run) return;
     // Nothing is known yet: the scan may still be running (watcher closed, connection lost, dashboard

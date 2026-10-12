@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   attachVulnHuntScan,
   cancelVulnHuntWatch,
+  clearVulnHuntHostCommand,
   deleteVulnHuntScan,
   fetchVulnHuntReport,
   fetchVulnHuntSetup,
   fetchVulnHuntStatus,
+  installVulnHunt,
   listVulnHuntRuns,
+  readVulnHuntInstallStream,
   readVulnHuntStream,
+  saveVulnHuntHostCommand,
   refreshVulnHuntScan,
   startVulnHuntScan,
   stopVulnHuntScan,
@@ -15,6 +19,8 @@ import {
 import {
   VulnHuntApiError,
   type SparkSnapshot,
+  type VulnHuntInstallJob,
+  type VulnHuntInstallRequest,
   type VulnHuntJob,
   type VulnHuntLine,
   type VulnHuntReportBundle,
@@ -23,7 +29,7 @@ import {
   type VulnHuntSetup,
   type VulnHuntStatus,
 } from "../../api/types";
-import { eligibleUnits, isLive } from "./securityLogic";
+import { isLive } from "./securityLogic";
 
 /** Poll interval while a scan is being followed. Nothing polls otherwise. */
 export const POLL_MS = 1500;
@@ -31,7 +37,6 @@ const MAX_LINES = 5000;
 /** How many polls to wait for the stored run to settle after the job ended (result capture). */
 const SETTLE_TRIES = 20;
 
-export const SECURITY_SPARK_KEY = "sparkdash.security.spark";
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -46,30 +51,6 @@ export function mergeLines(prev: VulnHuntLine[], next: VulnHuntLine[], max = MAX
 }
 
 // ── which unit the page acts on ──
-
-function readStored(): string | null {
-  try {
-    return localStorage.getItem(SECURITY_SPARK_KEY);
-  } catch {
-    return null;
-  }
-}
-
-/** The unit scans run on: online Linux units only, remembered across visits, first one by default. */
-export function useSecuritySpark(sparks: readonly SparkSnapshot[]) {
-  const [stored, setStored] = useState<string | null>(readStored);
-  const eligible = useMemo(() => eligibleUnits(sparks), [sparks]);
-  const spark = useMemo(() => eligible.find((s) => s.id === stored) ?? eligible[0] ?? null, [eligible, stored]);
-  const select = useCallback((id: string) => {
-    setStored(id);
-    try {
-      localStorage.setItem(SECURITY_SPARK_KEY, id);
-    } catch {
-      /* private mode */
-    }
-  }, []);
-  return { spark, select, eligible };
-}
 
 // ── setup text (static) and the unit's readiness ──
 
@@ -400,4 +381,160 @@ export function useVulnHuntReport(sparkId: string, runId: string | null, version
   // Until the effect has switched to a new run, never hand out the previous run's report.
   if (!runId || state.forId === runId) return state;
   return { loading: true, error: null, report: null, run: null };
+}
+
+// ── install / update of VulnHunter on the unit ──
+
+/** A failed request, with the status so the form can say what kind of refusal it was. */
+export interface InstallError {
+  message: string;
+  status: number | null;
+}
+
+const toInstallError = (e: unknown): InstallError => ({ message: msg(e), status: e instanceof VulnHuntApiError ? e.status : null });
+
+/**
+ * Starts the install and follows its output. Polls the stream every second while the job runs and stops
+ * as soon as it is not running; `onDone` runs once per job that ends (any outcome), so the caller can
+ * re-check the unit. An install already running on the unit is picked up when the page opens.
+ */
+export function useVulnHuntInstall(sparkId: string, onDone: () => void) {
+  const [job, setJob] = useState<VulnHuntInstallJob | null>(null);
+  const [lines, setLines] = useState<VulnHuntLine[]>([]);
+  const [partial, setPartial] = useState("");
+  const [error, setError] = useState<InstallError | null>(null);
+  const [starting, setStarting] = useState(false);
+  const sinceRef = useRef(0);
+  const followedRef = useRef(false);
+  const doneRef = useRef(onDone);
+  doneRef.current = onDone;
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  const running = job?.status === "running";
+  const jobId = job?.id ?? null;
+
+  const follow = useCallback((j: VulnHuntInstallJob, initial: VulnHuntLine[] = [], next = 0) => {
+    followedRef.current = true;
+    sinceRef.current = next;
+    setLines(initial);
+    setPartial("");
+    setError(null);
+    setJob(j);
+  }, []);
+
+  // Pick up an install that is already running on the unit (page opened or reloaded mid-install).
+  useEffect(() => {
+    let off = false;
+    readVulnHuntInstallStream(sparkId, 0)
+      .then((r) => {
+        if (off || followedRef.current || !r || r.job.status !== "running") return;
+        follow(r.job, r.lines, r.nextLine);
+        setPartial(r.partial ?? "");
+      })
+      .catch(() => {
+        /* nothing to pick up, or the unit is unreachable: the form still works */
+      });
+    return () => {
+      off = true;
+    };
+  }, [sparkId, follow]);
+
+  // Poll while the job runs; stop (and tell the caller) when it does not.
+  useEffect(() => {
+    if (!running || !jobId) return;
+    let off = false;
+    let timer: number | undefined;
+    const tick = async () => {
+      try {
+        const r = await readVulnHuntInstallStream(sparkId, sinceRef.current);
+        if (off) return;
+        if (!r) {
+          // The dashboard lost the job (it restarted): nothing more will arrive.
+          setJob((p) => (p ? { ...p, status: "detached", error: "The dashboard no longer has this install job (it may have restarted). Check the unit again." } : p));
+          doneRef.current();
+          return;
+        }
+        sinceRef.current = Math.max(sinceRef.current, r.nextLine);
+        setLines((p) => mergeLines(p, r.lines));
+        setPartial(r.partial ?? "");
+        setJob(r.job);
+        setError(null);
+        if (r.job.status !== "running") {
+          doneRef.current();
+          return;
+        }
+      } catch (e) {
+        if (off) return;
+        setError(toInstallError(e));
+      }
+      timer = window.setTimeout(tick, 1000);
+    };
+    timer = window.setTimeout(tick, 1000);
+    return () => {
+      off = true;
+      window.clearTimeout(timer);
+    };
+  }, [sparkId, running, jobId]);
+
+  const start = useCallback(
+    async (req: VulnHuntInstallRequest): Promise<boolean> => {
+      setError(null);
+      setStarting(true);
+      try {
+        const r = await installVulnHunt(sparkId, req);
+        if (!mountedRef.current) return true;
+        follow(r.job);
+        return true;
+      } catch (e) {
+        if (mountedRef.current) setError(toInstallError(e));
+        return false;
+      } finally {
+        if (mountedRef.current) setStarting(false);
+      }
+    },
+    [sparkId, follow]
+  );
+
+  return { job, lines, partial, error, starting, running, start, clearError: () => setError(null) };
+}
+
+// ── the harness command (write-only) ──
+
+/** Save / remove the harness command. The command is never read back, kept or logged here. */
+export function useVulnHuntHostCommand(sparkId: string, onChanged: () => void) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<InstallError | null>(null);
+  const changedRef = useRef(onChanged);
+  changedRef.current = onChanged;
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const run = useCallback(async (fn: () => Promise<unknown>): Promise<boolean> => {
+    setError(null);
+    setBusy(true);
+    try {
+      await fn();
+      if (mountedRef.current) changedRef.current();
+      return true;
+    } catch (e) {
+      if (mountedRef.current) setError(toInstallError(e));
+      return false;
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  }, []);
+
+  const save = useCallback((command: string) => run(() => saveVulnHuntHostCommand(sparkId, command)), [sparkId, run]);
+  const clear = useCallback(() => run(() => clearVulnHuntHostCommand(sparkId)), [sparkId, run]);
+  return { busy, error, save, clear };
 }

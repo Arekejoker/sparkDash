@@ -1582,6 +1582,8 @@ export type VulnHuntRunStatus = "running" | "completed" | "failed" | "stopped" |
 
 export interface VulnHuntSetup {
   repository: string;
+  /** The VulnHunter revision the dashboard installs. */
+  pinnedRev: string;
   /** Where the unit's user keeps the harness command (a path, never its contents). */
   hostCommandFile: string;
   steps: string[];
@@ -1609,6 +1611,49 @@ export interface VulnHuntStatus {
   ready: boolean;
   runRoot: string | null;
   error: string | null;
+  /** What the dashboard's installer knows about the unit. */
+  install: VulnHuntInstallInfo;
+}
+
+export interface VulnHuntInstallInfo {
+  pinnedRev: string;
+  installedRev: string | null;
+  upToDate: boolean;
+  skillsDir: string | null;
+  agentsDir: string | null;
+  /** Version of the Python 3.11+ found on the unit (for example "3.12"); null when there is none. */
+  python311: string | null;
+  /** Absolute paths of harness skills directories that exist on the unit. */
+  skillsDirCandidates: string[];
+}
+
+export interface VulnHuntInstallRequest {
+  skillsDir: string;
+  agentsDir?: string;
+}
+
+export interface VulnHuntInstallJob {
+  id: string;
+  sparkId: string;
+  kind: "install";
+  status: "running" | "completed" | "failed" | "detached" | "cancelled";
+  exitCode: number | null;
+  error: string | null;
+  startedAt: number;
+  finishedAt: number | null;
+}
+
+export interface VulnHuntInstallStream {
+  job: VulnHuntInstallJob;
+  lines: VulnHuntLine[];
+  partial: string;
+  nextLine: number;
+}
+
+export interface VulnHuntInstallStarted {
+  job: VulnHuntInstallJob;
+  revision: string;
+  repository: string;
 }
 
 export interface VulnHuntJob {

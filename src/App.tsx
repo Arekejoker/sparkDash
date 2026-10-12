@@ -31,14 +31,12 @@ import {
   BoltIcon,
   ListIcon,
   PanelLeftIcon,
-  ShieldIcon,
   TokensIcon,
 } from "./components/ui/icons";
 import { ConnectionBanner } from "./components/ui/ConnectionBanner";
 import { ErrorBanner } from "./components/ui/ErrorBanner";
 import {
   ACTIVITY_ID,
-  SECURITY_ID,
   SHOWCASE_ID,
   ENERGY_ID,
   OVERVIEW_ID,
@@ -52,7 +50,6 @@ import {
 import { TokensPage } from "./components/TokensPage/TokensPage";
 import { EnergyPage } from "./components/EnergyPage/EnergyPage";
 import { ActivityPage } from "./components/ActivityPage/ActivityPage";
-import { SecurityPage } from "./components/SecurityPage/SecurityPage";
 import { BenchPage } from "./components/bench/BenchPage";
 import { BENCH_SPARK_KEY, BENCH_TYPES } from "./components/bench/benchCatalog";
 import type { AuthMode, Settings, SparkSnapshot } from "./api/types";
@@ -445,7 +442,6 @@ function DashboardApp() {
       { id: "nav:energy", group: "Go to", label: "Fleet energy", hint: "Page", icon: <BoltIcon className="h-4 w-4" />, keywords: "power kwh watts cost electricity", run: () => navigate(ENERGY_ID) },
       { id: "nav:showcase", group: "Go to", label: "Showcase", hint: "Page", icon: <TerminalIcon className="h-4 w-4" />, keywords: "prompts terminals stream demo", run: () => navigate(SHOWCASE_ID) },
       { id: "nav:activity", group: "Go to", label: "Activity", hint: "Page", icon: <ListIcon className="h-4 w-4" />, keywords: "events log history recent", run: () => navigate(ACTIVITY_ID) },
-      { id: "nav:security", group: "Go to", label: "Security scans", hint: "Page", icon: <ShieldIcon className="h-4 w-4" />, keywords: "vulnhunt vulnerability audit code scan cve cwe", run: () => navigate(SECURITY_ID) }
     );
     for (const s of displaySparks) {
       cmds.push({
@@ -549,8 +545,6 @@ function DashboardApp() {
                 <EnergyPage sparks={displaySparks} settings={settings} onSelectSpark={navigate} />
               ) : activeId === ACTIVITY_ID ? (
                 <ActivityPage sparks={displaySparks} onSelectSpark={navigate} />
-              ) : activeId === SECURITY_ID ? (
-                <SecurityPage sparks={displaySparks} onSelectSpark={navigate} />
               ) : activeId === SHOWCASE_ID ? (
                 <ShowcaseView sparks={displaySparks} />
               ) : benchType ? (

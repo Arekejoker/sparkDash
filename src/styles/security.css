@@ -583,3 +583,112 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* Guided setup: install step and harness command step */
+.sec-step {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}
+.sec-step__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-strong);
+}
+.sec-step__num {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--color-surface-elevated);
+  border: 1px solid var(--color-border-strong);
+  font-size: 11px;
+  color: var(--color-muted-strong);
+}
+.sec-step__status {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+.sec-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 100%;
+}
+.sec-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--color-text);
+  cursor: pointer;
+}
+.sec-chip.is-on {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+.sec-chip input {
+  flex: none;
+  margin: 0;
+}
+.sec-chip code {
+  background: transparent;
+  padding: 0;
+}
+.sec-install-out {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.sec-install-out__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sec-install-out__tail {
+  margin: 6px 0 0;
+  max-height: 140px;
+  overflow: auto;
+  font-family: "Geist Mono Variable", "Geist Mono", ui-monospace, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.sec-ok {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-success);
+}
+.sec-manual {
+  min-width: 0;
+}
+.sec-manual > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--color-muted-strong);
+}
+.sec-manual[open] > summary {
+  margin-bottom: 10px;
+}

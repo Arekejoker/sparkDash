@@ -9,7 +9,8 @@
  *   - `vh`, the VulnHunter operator CLI (its install.sh puts it in ~/.local/bin)
  *   - the harness's headless one-shot as VULNHUNT_HOST_CMD, taken from the environment or from
  *     the first line of ~/.config/sparkdash/vulnhunt-host-cmd (a file the unit's user owns and
- *     nobody else can write). The command line is NEVER accepted from the dashboard API.
+ *     nobody else can write). The dashboard can write that file (PUT .../host-command, same gate as starting
+ *     a scan) but never reads it back: only the program's name is ever reported.
  *
  * The scan sequence is the one VulnHunter's own operator skill and benchmark harness use:
  * `vh clone` -> `vh host <prompt>` (prompt = "/vulnhunt <checkout>") -> `vh find-results`
@@ -39,6 +40,12 @@ const PATH_LINE = 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin
  * SPARKDASH_VULNHUNT_TICK (seconds between janitor checks, default 15).
  */
 export const GRACE_SECONDS = 20;
+
+/** The VulnHunter revision sparkDash installs (pinned: bump it deliberately after reading the diff). */
+export const VULNHUNTER_REPO = "https://github.com/nealbridges/VulnHunter.git";
+export const VULNHUNTER_REV = "b91b81e696a756e8a3d9ea69248b469b834a2f92";
+export const INSTALL_DIR = "$HOME/.local/share/sparkdash/VulnHunter";
+export const INSTALL_RECORD = "$HOME/.config/sparkdash/vulnhunt-install";
 
 export function runDirRef(runId) {
   return `~/.cache/sparkdash/vulnhunt/${runId}`;
@@ -372,6 +379,16 @@ if [ -n "$HOSTCMD" ]; then
 fi
 echo "HOSTCMD_FILE=${HOST_CMD_FILE}"
 echo "RUNROOT=${RUN_ROOT}"
+if [ -d "${INSTALL_DIR}/.git" ]; then echo "INSTALLED_REV=$(git -C "${INSTALL_DIR}" rev-parse HEAD 2>/dev/null)"; fi
+if [ -f "${INSTALL_RECORD}" ]; then sed -n 's/^SKILLS_DIR=\\(.*\\)$/INSTALLED_SKILLS_DIR=\\1/p;s/^AGENTS_DIR=\\(.*\\)$/INSTALLED_AGENTS_DIR=\\1/p' "${INSTALL_RECORD}" | head -n 2; fi
+# Skills directories of harnesses that are installed here (offered as choices in the UI).
+for d in "$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.config/opencode/skills" "$HOME/.grok/skills" "$HOME/.hermes/skills" "$HOME/.agents/skills"; do
+  [ -d "$d" ] && echo "SKILLSDIR=$d"
+done
+PYV=""; for c in python3.13 python3.12 python3.11 python3; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 11) else 1)' 2>/dev/null; then PYV=$("$c" -c 'import sys; print("%d.%d" % sys.version_info[:2])'); break; fi
+done
+echo "PYTHON311=$PYV"
 `);
 }
 
@@ -406,4 +423,120 @@ fi
 
 export function buildDeleteRunProgram({ runId }) {
   return wrap(`rm -rf "${RUN_ROOT}/${runId}"; echo ok`);
+}
+
+/** The `vh` launcher (same shape as upstream's): @REPO@ and @PY@ are filled in on the unit. */
+const LAUNCHER_B64 = Buffer.from(
+  '#!/bin/sh\n# sparkdash-managed launcher for VulnHunter\'s operator CLI\nPYTHONPATH="@REPO@${PYTHONPATH:+:$PYTHONPATH}" exec "@PY@" -m vh "$@"\n',
+  "utf8"
+).toString("base64");
+
+/**
+ * Install VulnHunter on the unit: the pinned revision is fetched by hash into ~/.local/share/sparkdash/VulnHunter,
+ * the `vulnhunt` skill is copied into the harness's skills directory (and the agent definition into its agents
+ * directory when given), and a `vh` launcher is written to ~/.local/bin. Upstream's install.sh is not used on
+ * purpose: besides the same copying it builds a virtualenv from PyPI for the fix skill, which a scan does not need.
+ * Output streams like any job; the exit marker carries the result.
+ */
+export function buildInstallProgram({ skillsDir, agentsDir = "", nonce = "", repo = VULNHUNTER_REPO, rev = VULNHUNTER_REV, protocol = "https" }) {
+  const TX = exitToken(nonce);
+  // These are interpolated into the program text: constants of this module, or a local test fixture.
+  if (!/^[0-9a-f]{40}$/.test(rev)) throw new Error("invalid revision");
+  if (!/^(https:\/\/|file:\/\/\/)[A-Za-z0-9._~/:@+=,-]{1,300}$/.test(repo)) throw new Error("invalid repository");
+  if (protocol !== "https" && protocol !== "file") throw new Error("invalid protocol");
+  const b64 = (v) => Buffer.from(String(v), "utf8").toString("base64");
+  return wrap(`
+umask 022
+${PATH_LINE}
+fail() { echo "[sparkdash] $1"; echo "${TX}$2"; exit 0; }
+step() { echo "[sparkdash] $1"; }
+SK_RAW=$(printf %s '${b64(skillsDir)}' | base64 -d)
+AG_RAW=$(printf %s '${b64(agentsDir)}' | base64 -d)
+expand() { case "$1" in "~/"*) printf '%s' "$HOME/\${1#\\~/}";; *) printf '%s' "$1";; esac; }
+SK=$(expand "$SK_RAW"); AG=""; [ -n "$AG_RAW" ] && AG=$(expand "$AG_RAW")
+REALHOME=$(realpath -e -- "$HOME" 2>/dev/null) || REALHOME="$HOME"
+# Destinations must be inside the unit user's home (created if missing), never the home itself.
+inside_home() {
+  local d="$1" parent real
+  mkdir -p -- "$d" 2>/dev/null || return 1
+  real=$(realpath -e -- "$d" 2>/dev/null) || return 1
+  case "$real" in "$REALHOME"/*) return 0;; esac
+  return 1
+}
+command -v git >/dev/null 2>&1 || fail "git is not installed on this unit." 127
+PY=""
+for c in python3.13 python3.12 python3.11 python3; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 11) else 1)' 2>/dev/null; then PY=$(command -v "$c"); break; fi
+done
+[ -n "$PY" ] || fail "Python 3.11 or newer is required on this unit (VulnHunter's requirement)." 127
+step "using $PY"
+inside_home "$SK" || fail "The skills directory must be inside this unit user's home directory." 2
+[ -z "$AG" ] || inside_home "$AG" || fail "The agents directory must be inside this unit user's home directory." 2
+SK=$(realpath -e -- "$SK"); [ -z "$AG" ] || AG=$(realpath -e -- "$AG")
+
+REPO="${INSTALL_DIR}"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_ALLOW_PROTOCOL=${protocol}
+export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=http.followRedirects GIT_CONFIG_VALUE_0=false GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null
+mkdir -p "$(dirname "$REPO")" || fail "Could not create the install directory." 1
+if [ ! -d "$REPO/.git" ]; then
+  rm -rf "$REPO"; git init -q "$REPO" || fail "git init failed." 1
+  git -C "$REPO" remote add origin "${repo}"
+fi
+step "fetching VulnHunter ${rev.slice(0, 12)} from ${repo}"
+git -C "$REPO" fetch --depth 1 origin "${rev}" || fail "Could not fetch VulnHunter (is github.com reachable from this unit?)." 3
+git -C "$REPO" checkout -q --detach -f FETCH_HEAD || fail "Could not check out the fetched revision." 3
+[ "$(git -C "$REPO" rev-parse HEAD)" = "${rev}" ] || fail "The fetched revision does not match the pinned one; refusing to install." 3
+[ -f "$REPO/vulnhunt/SKILL.md" ] && [ -f "$REPO/vh/cli.py" ] || fail "The fetched revision does not look like VulnHunter." 3
+
+step "installing the vulnhunt skill into $SK"
+rm -rf -- "$SK/vulnhunt"
+cp -R "$REPO/vulnhunt" "$SK/vulnhunt" || fail "Could not copy the skill." 1
+printf '%s\n' "${rev}" > "$SK/vulnhunt/.installed-from"
+if [ -n "$AG" ] && [ -f "$REPO/agents/vulnhunter.md" ]; then
+  step "installing the agent definition into $AG"
+  cp "$REPO/agents/vulnhunter.md" "$AG/vulnhunter.md" || fail "Could not copy the agent definition." 1
+fi
+
+BIN="$HOME/.local/bin"
+mkdir -p "$BIN"
+printf %s '${LAUNCHER_B64}' | base64 -d | sed -e "s|@REPO@|$REPO|" -e "s|@PY@|$PY|" > "$BIN/vh"
+chmod +x "$BIN/vh"
+"$BIN/vh" --help >/dev/null 2>&1 || fail "The vh launcher does not run (python modules missing?)." 1
+
+mkdir -p "$(dirname "${INSTALL_RECORD}")"
+{ printf 'REV=%s\n' "${rev}"; printf 'SKILLS_DIR=%s\n' "$SK"; [ -z "$AG" ] || printf 'AGENTS_DIR=%s\n' "$AG"; } > "${INSTALL_RECORD}"
+step "installed: vh at $BIN/vh, skill at $SK/vulnhunt"
+echo "${TX}0"
+`);
+}
+
+/**
+ * Save the harness's headless command for the unit (the first line of ~/.config/sparkdash/vulnhunt-host-cmd,
+ * mode 600). The command travels base64-encoded and is only ever written, never printed back.
+ */
+export function buildSetHostCommandProgram({ command, nonce = "" }) {
+  const TX = exitToken(nonce);
+  const b64 = Buffer.from(String(command), "utf8").toString("base64");
+  return wrap(`
+umask 077
+${PATH_LINE}
+${FIRST_TOKEN}
+fail() { echo "$1"; echo "${TX}$2"; exit 0; }
+CMD=$(printf %s '${b64}' | base64 -d)
+FIRST=$(first_token "$CMD")
+[ -n "$FIRST" ] || fail "The command could not be read (check the quoting)." 2
+command -v "$FIRST" >/dev/null 2>&1 || fail "$FIRST was not found on PATH on this unit." 2
+CF="${HOST_CMD_FILE}"
+mkdir -p "$(dirname "$CF")" || fail "Could not create the config directory." 1
+[ ! -L "$CF" ] || rm -f "$CF"
+TMP="$CF.$$"
+printf '%s\n' "$CMD" > "$TMP" && chmod 600 "$TMP" && mv -f "$TMP" "$CF" || { rm -f "$TMP"; fail "Could not write the command file." 1; }
+echo "saved"
+echo "${TX}0"
+`);
+}
+
+export function buildClearHostCommandProgram({ nonce = "" }) {
+  const TX = exitToken(nonce);
+  return wrap(`rm -f "${HOST_CMD_FILE}"; echo "${TX}0"`);
 }

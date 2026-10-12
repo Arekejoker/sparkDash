@@ -189,3 +189,55 @@ describe("mergeLines", () => {
     expect(mergeLines([l(1), l(2)], [l(3), l(4)], 3).map((x) => x.seq)).toEqual([2, 3, 4]);
   });
 });
+
+import { installBlockedReason, installDirProblem, setupProblems, shortRev } from "./securityLogic";
+
+describe("installer gating", () => {
+  const ok = {
+    setup: { startAllowed: true, startBlockedReason: null },
+    setupError: null,
+    git: true,
+    python311: "3.12" as string | null,
+    skillsDir: "~/.claude/skills",
+    agentsDir: "",
+    running: false,
+  };
+  it("accepts a normal request", () => {
+    expect(installBlockedReason(ok)).toBeNull();
+  });
+  it("blocks in order: not allowed, running, git, python, directories", () => {
+    expect(installBlockedReason({ ...ok, setup: { startAllowed: false, startBlockedReason: "no token" } })).toBe("no token");
+    expect(installBlockedReason({ ...ok, running: true })).toMatch(/already running/);
+    expect(installBlockedReason({ ...ok, git: false })).toMatch(/git/);
+    expect(installBlockedReason({ ...ok, python311: null })).toMatch(/Python 3.11 or newer/);
+    expect(installBlockedReason({ ...ok, skillsDir: "" })).toMatch(/skills directory/);
+    expect(installBlockedReason({ ...ok, agentsDir: "relative/dir" })).toMatch(/absolute path/);
+  });
+  it("validates directories", () => {
+    expect(installDirProblem("/home/u/.claude/skills", true)).toBeNull();
+    expect(installDirProblem("~/x", true)).toBeNull();
+    expect(installDirProblem("", false)).toBeNull();
+    expect(installDirProblem("/a/../b", true)).toMatch(/\.\./);
+    expect(installDirProblem("/a b", true)).not.toBeNull();
+    expect(installDirProblem("/a;rm", true)).not.toBeNull();
+  });
+  it("shortens a revision", () => {
+    expect(shortRev("0123456789abcdef")).toBe("0123456789a".slice(0, 9));
+    expect(shortRev(null)).toBe("");
+  });
+});
+
+describe("setupProblems with the installer", () => {
+  const base = {
+    reachable: true,
+    installed: true,
+    git: true,
+    setsid: true,
+    hostCommand: { source: "file", found: true, configured: true },
+  };
+  it("lists a missing Python 3.11 and an outdated install", () => {
+    expect(setupProblems({ ...base, install: { python311: null, upToDate: true } })).toEqual(["Python 3.11 or newer is needed on this unit."]);
+    expect(setupProblems({ ...base, install: { python311: "3.12", upToDate: false } })).toHaveLength(1);
+    expect(setupProblems({ ...base, install: { python311: "3.12", upToDate: true } })).toEqual([]);
+  });
+});

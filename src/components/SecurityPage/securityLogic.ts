@@ -261,14 +261,63 @@ export function setupProblems(status: {
   git: boolean;
   setsid: boolean;
   hostCommand: { source: string; found: boolean; configured: boolean };
+  install?: { python311: string | null; upToDate: boolean } | null;
 }): string[] {
   const out: string[] = [];
   if (!status.reachable) return ["The unit could not be reached."];
   if (!status.installed) out.push("VulnHunter is not installed on this unit.");
+  else if (status.install && !status.install.upToDate) out.push("The installed VulnHunter is not the revision this dashboard installs.");
+  if (status.install && status.install.python311 == null) out.push("Python 3.11 or newer is needed on this unit.");
   if (!status.git) out.push("git is not installed on this unit.");
   if (!status.setsid) out.push("The setsid command (util-linux) is not available on this unit.");
   const h = status.hostCommand;
   if (h.source === "unsafe") out.push("The harness command file is not safe to use: it must be a regular file (not a link), owned by the unit's user, with permissions 600.");
   else if (!h.configured) out.push(h.source !== "none" && !h.found ? "The configured harness program was not found on the unit." : "No harness command is configured.");
   return out;
+}
+
+/** First 9 characters of a git revision. */
+export const shortRev = (rev: string | null | undefined): string => (rev ? rev.slice(0, 9) : "");
+
+/** Same character rules as the server (it re-validates): absolute or ~/ path, letters, digits and . _ @ + = , / - only. */
+const DIR_RE = /^(~\/|\/)[A-Za-z0-9._@+=,/-]+$/;
+
+/** A problem with a directory the user typed for the installer, or null. An empty optional directory is fine. */
+export function installDirProblem(value: string, required: boolean): string | null {
+  const v = value.trim();
+  if (!v) return required ? "Choose a skills directory." : null;
+  if (v.length > 400) return "That path is too long.";
+  if (!DIR_RE.test(v)) return "Use an absolute path or ~/…, with letters, digits and . _ @ + = , / - only.";
+  if (v.split("/").includes("..")) return "The path must not contain “..”.";
+  return null;
+}
+
+export interface InstallGateInput {
+  setup: { startAllowed: boolean; startBlockedReason: string | null } | null;
+  setupError: string | null;
+  git: boolean;
+  python311: string | null;
+  skillsDir: string;
+  agentsDir: string;
+  running: boolean;
+}
+
+/** Why changes to a unit (install, harness command) are not allowed from this dashboard, or null. */
+export function changeBlockedReason(
+  setup: { startAllowed: boolean; startBlockedReason: string | null } | null,
+  setupError: string | null
+): string | null {
+  if (setup && !setup.startAllowed) return setup.startBlockedReason ?? "Changing a unit is not allowed on this dashboard.";
+  if (!setup && !setupError) return "Checking whether this dashboard allows changes…";
+  return null;
+}
+
+/** Why the Install / Update button is disabled, or null when it can be used. */
+export function installBlockedReason(i: InstallGateInput): string | null {
+  const gate = changeBlockedReason(i.setup, i.setupError);
+  if (gate) return gate;
+  if (i.running) return "An install is already running on this unit.";
+  if (!i.git) return "git is not installed on this unit.";
+  if (i.python311 == null) return "Python 3.11 or newer is needed on this unit.";
+  return installDirProblem(i.skillsDir, true) ?? installDirProblem(i.agentsDir, false);
 }

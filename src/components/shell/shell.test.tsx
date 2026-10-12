@@ -196,7 +196,7 @@ describe("MobileTabBar sheet", () => {
     expect(document.activeElement).toBe(opener);
   });
 
-  it("Stats opens Token totals, Fleet energy, Activity and Security scans; Sparks no longer lists them; Showcase follows Prefill", () => {
+  it("Stats opens Token totals, Fleet energy and Activity; VulnHunter sits under Benchmarks; Sparks no longer lists them; Showcase follows Prefill", () => {
     const { container } = render(
       <MobileTabBar sparks={[makeSpark("a")]} activeId={null} onSelect={() => {}} onAdd={() => {}} onOpenSettings={() => {}} />
     );
@@ -204,7 +204,7 @@ describe("MobileTabBar sheet", () => {
     expect(tab("Search")).toBeUndefined();
     act(() => tab("Stats").click());
     let names = [...document.querySelectorAll(".sheet .rail-item__name")].map((n) => n.textContent);
-    expect(names).toEqual(["Token totals", "Fleet energy", "Activity", "Security scans"]);
+    expect(names).toEqual(["Token totals", "Fleet energy", "Activity"]);
     act(() => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
@@ -214,7 +214,7 @@ describe("MobileTabBar sheet", () => {
     expect(names).not.toContain("Token totals");
     expect(names).not.toContain("Fleet energy");
     expect(names).not.toContain("Activity");
-    expect(names).not.toContain("Security scans");
+    expect(names).toContain("VulnHunter");
     expect(names.indexOf("Showcase")).toBe(names.indexOf("Prefill") + 1);
   });
 });

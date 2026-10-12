@@ -1,4 +1,7 @@
 import type {
+  VulnHuntInstallRequest,
+  VulnHuntInstallStarted,
+  VulnHuntInstallStream,
   VulnHuntJob,
   VulnHuntReportBundle,
   VulnHuntRun,
@@ -843,6 +846,30 @@ export function deleteVulnHuntScan(sparkId: string, runId: string, force = false
 }
 
 /** Stop watching the live job; a scan keeps going on the unit. */
+/** Install (or update) VulnHunter on the unit. 400/403/409 come back as VulnHuntApiError with the server's message. */
+export function installVulnHunt(sparkId: string, req: VulnHuntInstallRequest): Promise<VulnHuntInstallStarted> {
+  return vhFetch(`${vhBase(sparkId)}/install`, { method: "POST", body: JSON.stringify(req) });
+}
+
+/** The latest install job and its output since `lineSince`; null when no install has run since the dashboard started. */
+export async function readVulnHuntInstallStream(sparkId: string, lineSince = 0): Promise<VulnHuntInstallStream | null> {
+  try {
+    return await vhFetch<VulnHuntInstallStream>(`${vhBase(sparkId)}/install/stream?lineSince=${lineSince}`);
+  } catch (e) {
+    if (e instanceof VulnHuntApiError && e.status === 404) return null;
+    throw e;
+  }
+}
+
+/** Save the harness command on the unit. Write-only: the dashboard never reads it back. */
+export function saveVulnHuntHostCommand(sparkId: string, command: string): Promise<{ success: boolean }> {
+  return vhFetch(`${vhBase(sparkId)}/host-command`, { method: "PUT", body: JSON.stringify({ command }) });
+}
+
+export function clearVulnHuntHostCommand(sparkId: string): Promise<{ success: boolean }> {
+  return vhFetch(`${vhBase(sparkId)}/host-command`, { method: "DELETE" });
+}
+
 export function cancelVulnHuntWatch(sparkId: string): Promise<{ success: boolean }> {
   return vhFetch(`${vhBase(sparkId)}/watch`, { method: "DELETE" });
 }

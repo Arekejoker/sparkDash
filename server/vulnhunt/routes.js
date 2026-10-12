@@ -3,12 +3,14 @@ import {
   displayLine,
   parseAllowedHosts,
   scanArgv,
+  validateHostCommand,
+  validateInstallRequest,
   validateScanRequest,
   DEFAULT_TIMEOUT_MINUTES,
   MAX_TIMEOUT_MINUTES,
   MIN_TIMEOUT_MINUTES,
 } from "./validate.js";
-import { HOST_CMD_FILE, runDirRef } from "./commands.js";
+import { HOST_CMD_FILE, VULNHUNTER_REPO, VULNHUNTER_REV, runDirRef } from "./commands.js";
 import { isValidRunId, newRunId } from "./VulnHuntStore.js";
 
 /** What the setup card shows. Plain data: the dashboard never runs the installer for the user. */
@@ -34,8 +36,9 @@ export const SETUP = {
  * unlike the read-only routes it is NOT offered on an open dashboard: starting one needs
  * SPARKDASH_TOKEN, or a loopback bind. The request carries an explicit authorization
  * attestation (kept on the run record with a time and the requester), the harness command is
- * never taken from the request (it is read from a file the unit's user owns), and
- * VULNHUNT_ALLOWED_HOSTS can pin the hosts a scan may clone from.
+ * kept in a file the unit's user owns and is write-only through the API (never read back or echoed),
+ * installing and saving that command need the same gate, and VULNHUNT_ALLOWED_HOSTS can pin the
+ * hosts a scan may clone from.
  */
 export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun, principalKey, rejectLimited, bindHost = process.env.BIND_HOST || "127.0.0.1" }) {
   const base = "/api/sparks/:id/vulnhunt";
@@ -79,6 +82,7 @@ export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun
       ...SETUP,
       hostCommandFile: HOST_CMD_FILE.replace("$HOME", "~"),
       limits: { defaultTimeoutMinutes: DEFAULT_TIMEOUT_MINUTES, minTimeoutMinutes: MIN_TIMEOUT_MINUTES, maxTimeoutMinutes: MAX_TIMEOUT_MINUTES },
+      pinnedRev: VULNHUNTER_REV,
       startAllowed: startGate() == null,
       startBlockedReason: startGate(),
       allowedHosts: allowedHosts(),
@@ -90,6 +94,52 @@ export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun
     if (!spark) return;
     if (limited(req, res)) return;
     res.json(await manager.status(spark));
+  });
+
+  // ── installing VulnHunter and saving the harness command, from the UI ──
+  // Both change what runs on the unit as its user, so they need the same gate as starting a scan.
+
+  app.post(`${base}/install`, (req, res) => {
+    const spark = sparkOr404(req, res);
+    if (!spark) return;
+    if (limited(req, res)) return;
+    const blocked = startGate();
+    if (blocked) return res.status(403).json({ error: blocked });
+    const request = validateInstallRequest(req.body);
+    if (!request.ok) return res.status(400).json({ error: request.error });
+    const result = manager.installVulnHunt(spark, request);
+    if (!result.ok) return res.status(409).json({ error: "Another VulnHunter job is running on this unit. Wait for it or stop it first.", active: result.active });
+    res.status(202).json({ job: manager.summary(result.job), revision: VULNHUNTER_REV, repository: VULNHUNTER_REPO });
+  });
+
+  app.get(`${base}/install/stream`, (req, res) => {
+    const spark = sparkOr404(req, res);
+    if (!spark) return;
+    const job = manager.latestJob(spark.id);
+    if (!job || job.kind !== "install") return res.status(404).json({ error: "No install has run since the dashboard started" });
+    res.json(manager.readJob(spark.id, job.id, { lineSince: Number.parseInt(String(req.query.lineSince ?? "0"), 10) || 0 }));
+  });
+
+  app.put(`${base}/host-command`, async (req, res) => {
+    const spark = sparkOr404(req, res);
+    if (!spark) return;
+    if (limited(req, res)) return;
+    const blocked = startGate();
+    if (blocked) return res.status(403).json({ error: blocked });
+    const request = validateHostCommand(req.body);
+    if (!request.ok) return res.status(400).json({ error: request.error });
+    const saved = await manager.setHostCommand(spark, request.command);
+    if (!saved.ok) return res.status(400).json({ error: saved.message });
+    res.json({ success: true });
+  });
+
+  app.delete(`${base}/host-command`, async (req, res) => {
+    const spark = sparkOr404(req, res);
+    if (!spark) return;
+    if (limited(req, res)) return;
+    const blocked = startGate();
+    if (blocked) return res.status(403).json({ error: blocked });
+    res.json({ success: (await manager.clearHostCommand(spark)).ok });
   });
 
   app.get(`${base}/runs`, (req, res) => {

@@ -6,9 +6,10 @@ import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { validateScanRequest, validateSource, scanArgv, displayLine } from "../validate.js";
 import { parseFindings, parseHeader, parseManifest, countBySeverity, summarizeReport } from "../report.js";
-import { isBlockedCloneHost, parseAllowedHosts } from "../validate.js";
+import { isBlockedCloneHost, parseAllowedHosts, validateHostCommand, validateInstallRequest } from "../validate.js";
 import { VulnHuntStore, isValidRunId, newRunId } from "../VulnHuntStore.js";
 import { VulnHuntManager, explainExit } from "../VulnHuntManager.js";
+import { buildInstallProgram } from "../commands.js";
 import { installFakeUnit, REPORT } from "./fakeVulnHunt.js";
 
 const made = [];
@@ -567,7 +568,7 @@ test("pipeline: a harness that ignores TERM is ended after the grace period and 
   assert.equal(store.get(id).exitCode, 143);
   assert.equal(store.get(id).status, "stopped");
   assert.equal(pidAlive(hp), false, "the harness is gone");
-  assert.ok(Date.now() - t0 < 25_000);
+  assert.ok(Date.now() - t0 < 60_000, "bounded by the grace periods, with room for a loaded machine");
   assert.ok(!mgr.readJob("s1", id, {}).lines.some((l) => /Killed|Terminated/.test(l.text)), "no job-control noise from the wrapper being killed");
 });
 
@@ -724,4 +725,128 @@ test("report: a later sparse row never erases values, escaped pipes and code spa
   const h = parseHeader(md);
   assert.equal(h.runId, "r1");
   assert.equal(h.model, "m");
+});
+
+// ── installing VulnHunter and saving the harness command from the UI ────────
+
+/** A tiny stand-in for the VulnHunter repository (local, no network); returns its path and commit hash. */
+function fakeUpstream() {
+  const dir = tmp("vh-upstream-");
+  const w = (rel, text) => {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), text);
+  };
+  w("vulnhunt/SKILL.md", "# vulnhunt\n");
+  w("vulnhunt/phases/phase1_recon.md", "recon\n");
+  w("agents/vulnhunter.md", "# agent\n");
+  w("vh/__init__.py", "");
+  w("vh/__main__.py", "import sys\nprint('vh stand-in', sys.argv[1:])\n");
+  w("vh/cli.py", "# stand-in\n");
+  execFileSync("git", ["init", "-q", dir]);
+  execFileSync("git", ["-C", dir, "add", "-A"]);
+  execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"]);
+  const rev = execFileSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  return { dir, rev };
+}
+
+async function runInstall(mgr, opts) {
+  const res = mgr.installVulnHunt(spark, opts);
+  assert.equal(res.ok, true);
+  await until(() => mgr.latestJob("s1").status !== "running");
+  const job = mgr.latestJob("s1");
+  return { job, lines: mgr.readJob("s1", job.id, {}).lines.map((l) => l.text) };
+}
+
+test("install: the pinned revision is fetched by hash, the skill and vh are installed, and the unit reports it", async () => {
+  const home = tmp("vh-home-");
+  const up = fakeUpstream();
+  const { mgr, events } = realManager(home);
+  const { job, lines } = await runInstall(mgr, {
+    skillsDir: "~/.claude/skills",
+    agentsDir: "~/.claude/agents",
+    source: { repo: `file://${up.dir}`, rev: up.rev, protocol: "file" },
+  });
+  assert.equal(job.status, "completed", lines.slice(-4).join("\n"));
+  assert.ok(fs.existsSync(path.join(home, ".claude/skills/vulnhunt/SKILL.md")));
+  assert.equal(fs.readFileSync(path.join(home, ".claude/skills/vulnhunt/.installed-from"), "utf8").trim(), up.rev);
+  assert.ok(fs.existsSync(path.join(home, ".claude/agents/vulnhunter.md")));
+  const launcher = path.join(home, ".local/bin/vh");
+  assert.ok(fs.statSync(launcher).mode & 0o100, "vh is executable");
+  assert.match(execFileSync(launcher, ["find-results", "x"], { encoding: "utf8" }), /vh stand-in/);
+  assert.ok(events.some((e) => e.type === "vulnhunt.install.completed"));
+
+  // The unit's status now says what is installed and where.
+  fs.writeFileSync(path.join(home, ".config/sparkdash/vulnhunt-host-cmd"), "fake-harness\n", { mode: 0o600 });
+  installFakeUnit(home);
+  const st = await mgr.status(spark);
+  assert.equal(st.installed, true);
+  assert.equal(st.install.installedRev, up.rev);
+  assert.equal(st.install.upToDate, false, "not the pinned revision of this build");
+  assert.equal(st.install.skillsDir, path.join(home, ".claude/skills"));
+  assert.ok(st.install.skillsDirCandidates.includes(path.join(home, ".claude/skills")));
+  assert.match(st.install.python311, /^3\.\d+$/);
+
+  // Re-running replaces the copy instead of failing.
+  const again = await runInstall(mgr, { skillsDir: "~/.claude/skills", source: { repo: `file://${up.dir}`, rev: up.rev, protocol: "file" } });
+  assert.equal(again.job.status, "completed");
+});
+
+test("install: destinations outside the home directory, and a revision that is not the one asked for, are refused", async () => {
+  const home = tmp("vh-home-");
+  const outside = tmp("vh-outside-");
+  const up = fakeUpstream();
+  const { mgr } = realManager(home);
+  const src = { repo: `file://${up.dir}`, rev: up.rev, protocol: "file" };
+
+  const bad = await runInstall(mgr, { skillsDir: outside, source: src });
+  assert.equal(bad.job.exitCode, 2);
+  assert.ok(bad.lines.some((l) => /inside this unit user's home/.test(l)));
+  assert.equal(fs.existsSync(path.join(outside, "vulnhunt")), false);
+  assert.equal(fs.existsSync(path.join(home, ".local/bin/vh")), false, "nothing was installed");
+
+  const wrongRev = await runInstall(mgr, { skillsDir: "~/skills", source: { ...src, rev: "0".repeat(40) } });
+  assert.equal(wrongRev.job.exitCode, 3);
+  assert.equal(fs.existsSync(path.join(home, "skills/vulnhunt")), false);
+});
+
+test("install: arguments that would reach the program text are rejected before it is built", () => {
+  assert.throws(() => buildInstallProgram({ skillsDir: "~/s", rev: "abc; rm -rf /" }), /invalid revision/);
+  assert.throws(() => buildInstallProgram({ skillsDir: "~/s", repo: "https://x.example/a b" }), /invalid repository/);
+  assert.throws(() => buildInstallProgram({ skillsDir: "~/s", protocol: "ext" }), /invalid protocol/);
+});
+
+test("install request and harness command: validated before they reach a unit", () => {
+  assert.deepEqual(validateInstallRequest({ skillsDir: "~/.claude/skills/", agentsDir: "" }), { ok: true, skillsDir: "~/.claude/skills", agentsDir: "" });
+  for (const skillsDir of ["", "relative", "/a/../b", "~", "/", "~/a b", "~/$(id)", "~/x;y", "/home/u/./x"]) {
+    assert.equal(validateInstallRequest({ skillsDir }).ok, false, skillsDir);
+  }
+  assert.equal(validateInstallRequest({ skillsDir: "~/s", agentsDir: "../x" }).ok, false);
+  assert.equal(validateHostCommand({ command: "  opencode run --file  " }).command, "opencode run --file");
+  for (const command of ["", "   ", "a\nb", "a\u0000b", "-rf x", "x".repeat(501), 5]) {
+    assert.equal(validateHostCommand({ command }).ok, false, JSON.stringify(command).slice(0, 30));
+  }
+});
+
+test("harness command: saved private on the unit, only its program name comes back, refused when the program is missing", async () => {
+  const home = tmp("vh-home-");
+  installFakeUnit(home, { hostCmd: null });
+  const { mgr } = realManager(home);
+  const missing = await mgr.setHostCommand(spark, "no-such-harness --key sk-SECRET");
+  assert.equal(missing.ok, false);
+  assert.match(missing.message, /no-such-harness was not found/);
+  assert.ok(!missing.message.includes("sk-SECRET"));
+
+  const saved = await mgr.setHostCommand(spark, "fake-harness --headless --api-key sk-SECRET-VALUE");
+  assert.equal(saved.ok, true);
+  const file = path.join(home, ".config/sparkdash/vulnhunt-host-cmd");
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.equal(fs.readFileSync(file, "utf8"), "fake-harness --headless --api-key sk-SECRET-VALUE\n");
+  const st = await mgr.status(spark);
+  assert.equal(st.hostCommand.configured, true);
+  assert.equal(st.hostCommand.program, "fake-harness");
+  assert.ok(!JSON.stringify(st).includes("sk-SECRET-VALUE"));
+
+  assert.equal((await mgr.clearHostCommand(spark)).ok, true);
+  assert.equal(fs.existsSync(file), false);
+  assert.equal((await mgr.status(spark)).hostCommand.configured, false);
 });

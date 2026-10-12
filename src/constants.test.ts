@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ENERGY_ID, OVERVIEW_ID, SECURITY_ID, benchId, idToPath, initialActiveId, isPageId, isStaleSparkId, pathToId } from "./constants";
+import { ENERGY_ID, OVERVIEW_ID, benchId, idToPath, initialActiveId, isPageId, isStaleSparkId, pathToId } from "./constants";
 
 describe("route helpers", () => {
   it("round-trips ids and paths", () => {
@@ -11,13 +11,13 @@ describe("route helpers", () => {
     expect(pathToId("/nothing-here")).toBe(OVERVIEW_ID);
   });
 
-  it("knows the Security page", () => {
-    expect(SECURITY_ID).toBe("__security__");
-    expect(idToPath(SECURITY_ID)).toBe("/security");
-    expect(pathToId("/security")).toBe(SECURITY_ID);
-    expect(pathToId("/security/")).toBe(SECURITY_ID);
-    expect(isPageId(SECURITY_ID)).toBe(true);
-    expect(isStaleSparkId(SECURITY_ID, [], true)).toBe(false);
+  it("VulnHunter is a benchmark page; the old /security link lands on it", () => {
+    expect(idToPath(benchId("vulnhunt"))).toBe("/bench/vulnhunt");
+    expect(pathToId("/bench/vulnhunt")).toBe(benchId("vulnhunt"));
+    expect(pathToId("/security")).toBe(benchId("vulnhunt"));
+    expect(pathToId("/security/")).toBe(benchId("vulnhunt"));
+    expect(isPageId(benchId("vulnhunt"))).toBe(true);
+    expect(isStaleSparkId(benchId("vulnhunt"), [], true)).toBe(false);
   });
 
   describe("initialActiveId", () => {
@@ -26,7 +26,7 @@ describe("route helpers", () => {
       vi.stubGlobal("location", { pathname: "/energy" });
       expect(initialActiveId()).toBe(ENERGY_ID);
       vi.stubGlobal("location", { pathname: "/security" });
-      expect(initialActiveId()).toBe(SECURITY_ID);
+      expect(initialActiveId()).toBe(benchId("vulnhunt"));
       vi.stubGlobal("location", { pathname: "/spark/alpha" });
       expect(initialActiveId()).toBe("alpha");
     });

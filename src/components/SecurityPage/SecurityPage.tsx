@@ -1,20 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SparkSnapshot, VulnHuntRun } from "../../api/types";
-import { SparkChips } from "../bench/SparkChips";
 import { History } from "./History";
 import { LiveScan } from "./LiveScan";
 import { Notice } from "./parts";
 import { ReportPanel } from "./ReportView";
 import { ScanForm } from "./ScanForm";
 import { SetupCard } from "./SetupCard";
-import { useSecuritySpark, useVulnHuntReport, useVulnHuntRunner, useVulnHuntSetup, useVulnHuntStatus } from "./hooks";
+import { useVulnHuntReport, useVulnHuntRunner, useVulnHuntSetup, useVulnHuntStatus } from "./hooks";
 import { FALLBACK_LIMITS, isLive } from "./securityLogic";
 import "../../styles/security.css";
-
-interface SecurityPageProps {
-  sparks: SparkSnapshot[];
-  onSelectSpark?: (id: string) => void;
-}
 
 /** Everything for one unit. Keyed by unit id, so switching units starts from a clean slate. */
 function Workspace({ spark }: { spark: SparkSnapshot }) {
@@ -60,6 +54,7 @@ function Workspace({ spark }: { spark: SparkSnapshot }) {
   return (
     <>
       <SetupCard
+        sparkId={spark.id}
         unitName={spark.name}
         setup={setup}
         setupError={setupError}
@@ -130,42 +125,25 @@ function Workspace({ spark }: { spark: SparkSnapshot }) {
   );
 }
 
-/** Security scans: VulnHunter run on a unit, with its live output, history and parsed reports. */
-export function SecurityPage({ sparks, onSelectSpark }: SecurityPageProps) {
-  const { spark, select, eligible } = useSecuritySpark(sparks);
+/** The VulnHunter benchmark page body: setup, scan form, live output, history and parsed reports for one unit. */
+export function VulnHuntBenchPage({ spark }: { spark: SparkSnapshot | null }) {
+  if (!spark) {
+    return (
+      <Notice tone="info" title="No unit to scan on">
+        Scans run on a Linux unit (a DGX Spark or a GPU host). Add one first.
+      </Notice>
+    );
+  }
+  if (spark.platform === "windows" || spark.platform === "darwin") {
+    return (
+      <Notice tone="info" title={`${spark.name} cannot run scans`}>
+        VulnHunter scans run on Linux units. Pick another unit above.
+      </Notice>
+    );
+  }
   return (
     <div className="sec">
-      <div className="page-head">
-        <div>
-          <div className="eyebrow">Security</div>
-          <h1>Security scans</h1>
-          <p className="page-head__sub">
-            Run VulnHunter, an agentic source-code security scanner, on one of your units. The scan runs there, its output streams here, and
-            the report is kept for later.
-          </p>
-        </div>
-        <div className="page-head__tools">
-          {spark && onSelectSpark ? (
-            <button type="button" className="btn btn--sm btn--ghost" onClick={() => onSelectSpark(spark.id)}>
-              Open {spark.name}
-            </button>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="bench-runon">
-        <span className="eyebrow">Run on</span>
-        {eligible.length === 0 ? <span className="bench-runon__none">No online Linux unit available</span> : null}
-        <SparkChips sparks={eligible} activeId={spark?.id ?? null} onSelect={select} ariaLabel="Unit to scan on" />
-      </div>
-
-      {spark ? (
-        <Workspace key={spark.id} spark={spark} />
-      ) : (
-        <Notice tone="info" title="No unit to scan on">
-          Scans run on an online Linux unit (a DGX Spark or a GPU host). Windows units and offline units are not offered.
-        </Notice>
-      )}
+      <Workspace key={spark.id} spark={spark} />
     </div>
   );
 }

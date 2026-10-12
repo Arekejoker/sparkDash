@@ -167,3 +167,38 @@ export function displayLine({ kind, value, readOnly, timeoutMinutes }) {
 export function scanArgv({ kind, value, readOnly, timeoutMinutes }) {
   return [kind, value, readOnly ? "1" : "0", String(timeoutMinutes * 60)];
 }
+
+const INSTALL_DIR_RE = /^(~\/|\/)[A-Za-z0-9._@+=,/-]{1,300}$/;
+
+function installDir(v, label, { required }) {
+  const raw = typeof v === "string" ? v.trim() : "";
+  if (!raw) return required ? { error: `${label} is required` } : { value: "" };
+  if (!INSTALL_DIR_RE.test(raw)) return { error: `${label} must be an absolute path (or start with ~/) and use only letters, digits and . _ @ + = , / -` };
+  if (raw.split("/").some((seg) => seg === ".." || seg === ".")) return { error: `${label} must not contain . or .. segments` };
+  const normalized = raw.replace(/\/+$/, "");
+  if (normalized === "" || normalized === "~") return { error: `${label} must be a directory below the home directory` };
+  return { value: normalized };
+}
+
+/** Where the installer puts the skill (and, optionally, the agent definition): paths on the unit, checked again there. */
+export function validateInstallRequest(body) {
+  const b = body && typeof body === "object" ? body : {};
+  const skills = installDir(b.skillsDir, "Skills directory", { required: true });
+  if (skills.error) return { ok: false, error: skills.error };
+  const agents = installDir(b.agentsDir, "Agents directory", { required: false });
+  if (agents.error) return { ok: false, error: agents.error };
+  return { ok: true, skillsDir: skills.value, agentsDir: agents.value };
+}
+
+/**
+ * The harness's headless one-shot command line. It is written to a file only the unit's user can read
+ * and is never returned by the API; the dashboard only ever shows the name of its program.
+ */
+export function validateHostCommand(body) {
+  const raw = body && typeof body === "object" && typeof body.command === "string" ? body.command.trim() : "";
+  if (!raw) return { ok: false, error: "Enter the command that runs your harness headlessly" };
+  if (raw.length > 500) return { ok: false, error: "The command is too long (500 characters at most)" };
+  if (/[\u0000-\u001f\u007f]/.test(raw)) return { ok: false, error: "The command must be a single line without control characters" };
+  if (raw.startsWith("-")) return { ok: false, error: "The command must start with a program name" };
+  return { ok: true, command: raw };
+}

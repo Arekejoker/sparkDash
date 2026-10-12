@@ -269,3 +269,42 @@ test("VulnHunter over HTTP: deleting a running scan needs force, and a forced de
   assert.equal(again.status, 202);
   await settleScan(port, again.body.run.id);
 });
+
+test("VulnHunter over HTTP: install and harness-command endpoints are gated, validated and never echo the command", async (t) => {
+  // Open network bind, no token: refused like starting a scan.
+  const open = await startServer(t, { BIND_HOST: "0.0.0.0" });
+  await addLocalSpark(open.port);
+  const post = (port, p, body, headers) => api(port, p, { method: "POST", body: JSON.stringify(body), headers });
+  assert.equal((await post(open.port, "/api/sparks/alpha/vulnhunt/install", { skillsDir: "~/.claude/skills" })).status, 403);
+  const putOpen = await api(open.port, "/api/sparks/alpha/vulnhunt/host-command", { method: "PUT", body: JSON.stringify({ command: "fake-harness" }) });
+  assert.equal(putOpen.status, 403);
+  assert.equal((await api(open.port, "/api/sparks/alpha/vulnhunt/host-command", { method: "DELETE" })).status, 403);
+
+  // Loopback bind (the default here): validation, then the real thing against a stand-in harness.
+  const { port, tmp } = await startServer(t);
+  await addLocalSpark(port);
+  const base = "/api/sparks/alpha/vulnhunt";
+  assert.equal((await api(port, `${base}/install/stream`)).status, 404, "no install yet");
+  assert.equal((await post(port, `${base}/install`, { skillsDir: "../../etc" })).status, 400);
+  assert.equal((await post(port, `${base}/install`, { skillsDir: "~/ok", agentsDir: "/a/../b" })).status, 400);
+  assert.equal((await api(port, `${base}/host-command`, { method: "PUT", body: JSON.stringify({ command: "a\nb" }) })).status, 400);
+  assert.equal((await api(port, `${base}/host-command`, { method: "PUT", body: JSON.stringify({}) })).status, 400);
+
+  const secret = "sk-TOP-SECRET-FOR-TEST";
+  const bad = await api(port, `${base}/host-command`, { method: "PUT", body: JSON.stringify({ command: `not-a-program --key ${secret}` }) });
+  assert.equal(bad.status, 400);
+  assert.ok(!JSON.stringify(bad.body).includes(secret), "the command is never echoed, not even in an error");
+
+  const good = await api(port, `${base}/host-command`, { method: "PUT", body: JSON.stringify({ command: `fake-harness --headless --key ${secret}` }) });
+  assert.equal(good.status, 200);
+  const status = await api(port, `${base}/status`);
+  assert.equal(status.body.hostCommand.configured, true);
+  assert.equal(status.body.hostCommand.program, "fake-harness");
+  assert.ok(!JSON.stringify(status.body).includes(secret));
+  assert.equal(fs.statSync(path.join(tmp, ".config/sparkdash/vulnhunt-host-cmd")).mode & 0o077, 0);
+  assert.equal(status.body.install.pinnedRev.length, 40);
+  assert.equal(status.body.install.installedRev, null);
+
+  assert.equal((await api(port, `${base}/host-command`, { method: "DELETE" })).body.success, true);
+  assert.equal((await api(port, `${base}/status`)).body.hostCommand.configured, false);
+});
