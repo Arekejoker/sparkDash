@@ -187,3 +187,45 @@ test("splitRemoteGpuSections only breaks on whole-line known markers", () => {
   assert.deepEqual(Object.keys(sections), ["AMD", "MEMINFO"]);
   assert.equal(sections.AMD, "{\"n\": \"a__b\"}\n__FOO__");
 });
+
+function localCollector(onProbe) {
+  const collector = new SystemCollector({ id: "nv-local", kind: "host", isLocal: true });
+  collector._nvidiaSmi = async (args) => args.startsWith("--query-gpu=temperature")
+    ? "51,12,110,250,1500,2500,0,0,0,0,0,NVIDIA RTX,GPU-AAA" : "";
+  collector._amdSmi = async (args) => { onProbe(args); return ""; };
+  collector._queryNvidiaVram = async () => ({ used: 100, total: 24576, available: 24476 });
+  collector._getCPUPower = async () => ({ draw: 20 });
+  collector._cachedApps = () => [];
+  collector._topProcesses = () => [];
+  collector._nvErrNoMemory = async () => 0;
+  collector._kernelErrors = async () => null;
+  return collector;
+}
+
+test("absent amd-smi is probed once, then skipped until the cache expires", async () => {
+  const probes = [];
+  const collector = localCollector((args) => probes.push(args));
+  await collector._getGPUAll();
+  await collector._getGPUAll();
+  await collector._getGPUAll();
+  assert.equal(probes.length, 1, "one metric probe, no static probe, across three polls");
+  collector._amdAbsentUntil = Date.now() - 1;
+  await collector._getGPUAll();
+  assert.equal(probes.length, 2);
+});
+
+test("a host that has shown AMD data keeps polling amd-smi after a failed read", async () => {
+  const probes = [];
+  let broken = false;
+  const collector = localCollector((args) => probes.push(args));
+  collector._amdSmi = async (args) => {
+    probes.push(args);
+    if (broken) return "";
+    return args.startsWith("metric") ? JSON.stringify(amdMetrics) : JSON.stringify(amdLimits);
+  };
+  await collector._getGPUAll();
+  broken = true;
+  await collector._getGPUAll();
+  await collector._getGPUAll();
+  assert.equal(probes.filter((p) => p.startsWith("metric")).length, 3);
+});

@@ -138,6 +138,9 @@ export function splitRemoteGpuSections(output) {
   return sections;
 }
 
+// How long a local poll trusts "amd-smi is not installed" before probing again.
+const AMD_SMI_ABSENT_TTL_MS = 5 * 60 * 1000;
+
 const AMD_GPU_FIELDS = ["temperature", "usage", "powerDraw", "powerLimit", "vramUsed", "vramTotal"];
 const AMD_SMI_RESOLVER = [
   'amd_smi="${AMD_SMI_PATH:-}"',
@@ -388,16 +391,14 @@ export class SystemCollector {
 
   // ─── GPU helpers ─────────────────────────────────────────
   async _getGPUAll() {
-    const [gpuOut, amdMetricsOut, amdLimitsOut] = await Promise.all([
+    const [gpuOut, amd] = await Promise.all([
       this._nvidiaSmi(
-      "--query-gpu=temperature.gpu,utilization.gpu,power.draw,power.limit,clocks.current.sm,clocks.max.sm,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.sw_thermal_slowdown,clocks_throttle_reasons.hw_slowdown,clocks_throttle_reasons.sw_power_cap,index,name,uuid --format=csv,noheader,nounits"
+        "--query-gpu=temperature.gpu,utilization.gpu,power.draw,power.limit,clocks.current.sm,clocks.max.sm,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.sw_thermal_slowdown,clocks_throttle_reasons.hw_slowdown,clocks_throttle_reasons.sw_power_cap,index,name,uuid --format=csv,noheader,nounits"
       ).catch(() => ""),
-      this._amdSmi("metric -u -p -m -t --json").catch(() => ""),
-      this._amdSmi("static -l --json").catch(() => ""),
+      this._probeLocalAmd(),
     ]);
     const nvidiaDevices = this._parseGpuLines(gpuOut);
-    const amdDevices = parseAmdSmiMetrics(amdMetricsOut, amdLimitsOut)
-      .map((device) => ({ ...device, index: AMD_GPU_INDEX_OFFSET + device.index }));
+    const amdDevices = amd.devices;
     this._lastVramPerDevice = [];
     const nvidiaVram = nvidiaDevices.length ? await this._queryNvidiaVram() : { used: 0, total: 0, percentage: 0, available: 0 };
     const amdVram = this._sumDeviceVram(amdDevices);
@@ -438,6 +439,27 @@ export class SystemCollector {
         vramUsed: devices.some((device) => device.metricAvailability?.vramUsed !== false),
         vramTotal: devices.some((device) => device.metricAvailability?.vramTotal !== false),
       },
+    };
+  }
+
+  /**
+   * Local amd-smi probe. Each probe spawns a host shell, so once amd-smi has
+   * produced nothing on a host that has never shown an AMD GPU, skip it for
+   * AMD_SMI_ABSENT_TTL_MS. A host that has reported AMD data is always polled.
+   */
+  async _probeLocalAmd() {
+    const none = { devices: [] };
+    if (!this._amdEverSeen && Date.now() < (this._amdAbsentUntil ?? 0)) return none;
+    const metricsOut = await this._amdSmi("metric -u -p -m -t --json").catch(() => "");
+    if (!parseAmdSmiMetrics(metricsOut).length) {
+      if (!this._amdEverSeen) this._amdAbsentUntil = Date.now() + AMD_SMI_ABSENT_TTL_MS;
+      return none;
+    }
+    this._amdEverSeen = true;
+    const limitsOut = await this._amdSmi("static -l --json").catch(() => "");
+    return {
+      devices: parseAmdSmiMetrics(metricsOut, limitsOut)
+        .map((device) => ({ ...device, index: AMD_GPU_INDEX_OFFSET + device.index })),
     };
   }
 
