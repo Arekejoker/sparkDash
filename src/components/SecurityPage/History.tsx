@@ -69,7 +69,7 @@ export function History({ runs, error, followedId, viewedId, onReload, onOpen, o
                   <div className="sec-run__sub">
                     <span>{run.source.type === "url" ? "Git URL" : "Path"}</span>
                     {run.label ? <span className="sec-mono sec-run__src">{run.source.value}</span> : null}
-                    <span>{run.readOnly ? "read-only" : "may execute code"}</span>
+                    <span>{run.readOnly ? "read-only requested" : "may execute code"}</span>
                     <span>{fmtWhen(run.startedAt)}</span>
                     {run.finishedAt ? <span>{formatDuration(run.finishedAt - run.startedAt)}</span> : null}
                   </div>

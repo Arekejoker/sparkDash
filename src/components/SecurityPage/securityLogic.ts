@@ -259,14 +259,14 @@ export function setupProblems(status: {
   reachable: boolean;
   installed: boolean;
   git: boolean;
-  timeout: boolean;
+  setsid: boolean;
   hostCommand: { source: string; found: boolean; configured: boolean };
 }): string[] {
   const out: string[] = [];
   if (!status.reachable) return ["The unit could not be reached."];
   if (!status.installed) out.push("VulnHunter is not installed on this unit.");
   if (!status.git) out.push("git is not installed on this unit.");
-  if (!status.timeout) out.push("The timeout command (GNU coreutils) is not available on this unit.");
+  if (!status.setsid) out.push("The setsid command (util-linux) is not available on this unit.");
   const h = status.hostCommand;
   if (h.source === "unsafe") out.push("The harness command file is not safe to use: it must be a regular file (not a link), owned by the unit's user, with permissions 600.");
   else if (!h.configured) out.push(h.source !== "none" && !h.found ? "The configured harness program was not found on the unit." : "No harness command is configured.");

@@ -43,7 +43,9 @@ function Workspace({ spark }: { spark: SparkSnapshot }) {
   const followedLive = runner.followed ? isLive(runner.followed.run) : false;
   const anyLive = followedLive || (runner.runs?.some(isLive) ?? false);
   const notReady = !status.status || !status.status.ready;
-  const disabledReason = status.loading && !status.status
+  const disabledReason = setup && !setup.startAllowed
+    ? (setup.startBlockedReason ?? "Starting scans is not allowed on this dashboard.")
+    : status.loading && !status.status
     ? "Checking the unit…"
     : notReady
       ? "Finish the setup above before starting a scan."

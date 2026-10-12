@@ -820,8 +820,14 @@ export function attachVulnHuntScan(sparkId: string, runId: string): Promise<{ jo
   return vhFetch(`${vhRun(sparkId, runId)}/attach`, { method: "POST", body: "{}" });
 }
 
-export function stopVulnHuntScan(sparkId: string, runId: string): Promise<{ success: boolean; output?: string }> {
-  return vhFetch(`${vhRun(sparkId, runId)}/stop`, { method: "POST", body: "{}" });
+/** Rejects when the unit did not stop the scan (the server answers 200 with `success: false` then). */
+export async function stopVulnHuntScan(sparkId: string, runId: string): Promise<{ success: boolean; output?: string }> {
+  const res = await vhFetch<{ success: boolean; output?: string }>(`${vhRun(sparkId, runId)}/stop`, { method: "POST", body: "{}" });
+  if (!res.success) {
+    const why = (res.output ?? "").trim();
+    throw new Error(why === "not running" ? "The scan is not running on the unit any more." : why ? `The unit did not stop the scan: ${why.slice(0, 200)}` : "The unit did not stop the scan.");
+  }
+  return res;
 }
 
 export function refreshVulnHuntScan(

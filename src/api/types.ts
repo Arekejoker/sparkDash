@@ -1586,6 +1586,11 @@ export interface VulnHuntSetup {
   hostCommandFile: string;
   steps: string[];
   limits: { defaultTimeoutMinutes: number; minTimeoutMinutes: number; maxTimeoutMinutes: number };
+  /** False on an open dashboard (no SPARKDASH_TOKEN and not loopback): scans cannot be started. */
+  startAllowed: boolean;
+  startBlockedReason: string | null;
+  /** VULNHUNT_ALLOWED_HOSTS: when not empty, scans may only clone from these hosts. */
+  allowedHosts: string[];
 }
 
 export interface VulnHuntStatus {
@@ -1593,7 +1598,7 @@ export interface VulnHuntStatus {
   installed: boolean;
   path: string | null;
   git: boolean;
-  timeout: boolean;
+  setsid: boolean;
   hostCommand: {
     source: "env" | "file" | "none" | "unsafe";
     program: string | null;
@@ -1657,6 +1662,8 @@ export interface VulnHuntRun {
   timeoutMinutes: number;
   command: string;
   runDir: string;
+  /** When the authorization was given and by whom (the dashboard's name for the requester). */
+  authorization?: { at: number; by: string } | null;
   resultCached: boolean;
   summary: null | {
     hasReport: boolean;

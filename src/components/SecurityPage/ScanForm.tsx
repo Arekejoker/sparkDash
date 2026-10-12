@@ -107,7 +107,7 @@ export function ScanForm({ unitName, limits = FALLBACK_LIMITS, disabledReason = 
             </div>
             <div className="sec-field sec-field--narrow">
               <label className="sec-label" htmlFor={`${uid}-timeout`}>
-                Time limit (minutes)
+                Time limit (minutes, whole scan)
               </label>
               <input
                 id={`${uid}-timeout`}

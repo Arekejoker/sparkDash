@@ -64,7 +64,7 @@ export function SetupCard({ unitName, setup, setupError, status, loading, error,
         <ul className="sec-checks" aria-label="Setup checklist">
           <Row ok={status.installed} label="VulnHunter installed" detail={status.installed ? status.path : "not found"} />
           <Row ok={status.git} label="git available" />
-          <Row ok={status.timeout} label="timeout command available" />
+          <Row ok={status.setsid} label="setsid available" />
           <Row
             ok={status.hostCommand.configured}
             label="Harness command configured"

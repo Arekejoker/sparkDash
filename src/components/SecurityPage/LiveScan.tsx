@@ -52,8 +52,15 @@ export function LiveScan({ followed, polling, pollError, onStop, onStopWatching,
 
   const stop = async () => {
     setStopping(true);
-    await onStop();
-    setConfirmStop(false);
+    try {
+      await onStop();
+    } catch {
+      /* the runner reports the failure; the controls only need to come back */
+    } finally {
+      // A failed stop leaves the scan running: the confirmation closes and the error shows above.
+      setStopping(false);
+      setConfirmStop(false);
+    }
   };
 
   return (
@@ -71,7 +78,7 @@ export function LiveScan({ followed, polling, pollError, onStop, onStopWatching,
         <div className="sec-live__meta">
           <b className="sec-live__title">{runTitle(run)}</b>
           <span className="sec-faint">
-            {run.source.type === "url" ? "Git URL" : "Path on the unit"} · {run.readOnly ? "read-only" : "may execute code"} · limit {run.timeoutMinutes} min
+            {run.source.type === "url" ? "Git URL" : "Path on the unit"} · {run.readOnly ? "read-only requested" : "may execute code"} · limit {run.timeoutMinutes} min
             · {live ? "running for" : "took"} {formatDuration(elapsed)}
           </span>
         </div>
