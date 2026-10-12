@@ -750,8 +750,9 @@ export function cancelToolEvalWatch(sparkId: string): Promise<{ success: boolean
 /** Recent GPU history kept by the server (parallel arrays, oldest first; `p` is null where power was unknown). */
 export interface GpuHistoryResponse {
   t: number[];
-  u: number[];
-  c: number[];
+  /** Null where usage / temperature was unknown (e.g. a vendor tool reported no value). */
+  u: Array<number | null>;
+  c: Array<number | null>;
   p: Array<number | null>;
   /** Per-card series of a multi-GPU host, parallel to `t` (null where the card had no reading). Absent on older servers. */
   gpus?: Array<{ index: number; name: string | null; u: Array<number | null>; c: Array<number | null>; p: Array<number | null> }>;
