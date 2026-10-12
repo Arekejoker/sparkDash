@@ -64,6 +64,8 @@ const DEFAULTS = Object.freeze({
   prometheusExport: false,
   /** VulnHunter scans, installs and harness-command changes (they run an agent on a unit). Opt-in, off by default. */
   vulnhuntEnabled: false,
+  /** REA (Tools): install, uploads and analysis runs on a unit. Opt-in, off by default. */
+  reaEnabled: false,
 });
 
 const POLL_INTERVAL_MIN_MS = 500;
@@ -131,6 +133,7 @@ function _clampSettings(settings) {
   s.showVramBreakdown = Boolean(s.showVramBreakdown);
   s.prometheusExport = Boolean(s.prometheusExport);
   s.vulnhuntEnabled = Boolean(s.vulnhuntEnabled);
+  s.reaEnabled = Boolean(s.reaEnabled);
   // Ensure temperatureUnit is valid
   if (s.temperatureUnit !== "celsius" && s.temperatureUnit !== "fahrenheit") {
     s.temperatureUnit = DEFAULTS.temperatureUnit;

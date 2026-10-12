@@ -44,3 +44,5 @@ config/gpu-history.json
 config/fleet-energy.scope-*.json
 config/*.tmp
 config/*.json.*.tmp
+config/rea-runs.json
+config/rea-results/
