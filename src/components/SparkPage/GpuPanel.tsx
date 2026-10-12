@@ -234,7 +234,7 @@ export function GpuPanel({
             {metrics?.powerDraw === false ? null : <small>{metrics?.powerLimit === false ? "W" : powerLimit > 0 ? `/ ${powerLimit} W` : "W"}</small>}
           </div>
           {systemDraw != null && systemDraw > 0 ? (
-          <span className="sp-stat__sub mono">System ≈ {systemDraw} W</span>
+            <span className="sp-stat__sub mono">System ≈ {systemDraw} W</span>
           ) : null}
         </div>
         <div className="sp-stat" title={t?.detail ?? undefined}>
@@ -277,9 +277,9 @@ export function GpuPanel({
       {/* GPU-allocated memory (shown here only when the Unified memory panel is not) */}
       {gpu && !hideMemory && (
         <div className="sp-section">
-      {!vramAvailable ? (
-        <div className="sp-stat"><span className="eyebrow">VRAM</span><span className="mono">—</span></div>
-      ) : breakdown ? (
+          {!vramAvailable ? (
+            <div className="sp-stat"><span className="eyebrow">VRAM</span><span className="mono">—</span></div>
+          ) : breakdown ? (
             <>
               <VramBreakdownBar
                 label={

@@ -262,7 +262,7 @@ function SparkCardImpl({
                   showLegend
                 />
               ) : (
-              <Bar
+                <Bar
                   label={gpu.vram?.total ? "VRAM" : "Unified memory"}
                   caption={vramAvailable && memTotal > 0 ? `${fmtStorage(memUsed, false)} / ${fmtStorage(memTotal, true)}` : "—"}
                   pct={vramAvailable ? memPct : 0}
