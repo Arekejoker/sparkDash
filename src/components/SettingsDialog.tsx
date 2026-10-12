@@ -338,6 +338,12 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
                 onChange={(v) => update({ prometheusExport: v })}
               />
               <ToggleRow
+                title="VulnHunter scans"
+                help="Lets the VulnHunter page (Benchmarks) install VulnHunter on a unit, save your agent harness's command there and run scans. A scan starts an AI agent on the unit as its SSH user, so this is off by default; anyone who can reach this dashboard can use it once it is on, so set SPARKDASH_TOKEN if others can."
+                checked={Boolean(settings.vulnhuntEnabled)}
+                onChange={(v) => update({ vulnhuntEnabled: v })}
+              />
+              <ToggleRow
                 title="Show Fleet Energy"
                 help="Overview card with rolling fleet power estimates. The full Fleet energy page is always available from the sidebar."
                 checked={Boolean(settings.showFleetEnergy)}

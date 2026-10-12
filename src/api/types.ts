@@ -737,6 +737,8 @@ export interface Settings {
   showVramBreakdown: boolean;
   /** Serve GET /metrics in Prometheus text format. Off by default (404 when off). */
   prometheusExport: boolean;
+  /** VulnHunter scans, installs and harness-command changes are opt-in (off by default). */
+  vulnhuntEnabled: boolean;
 }
 
 export interface SparksListResponse {
@@ -1588,7 +1590,9 @@ export interface VulnHuntSetup {
   hostCommandFile: string;
   steps: string[];
   limits: { defaultTimeoutMinutes: number; minTimeoutMinutes: number; maxTimeoutMinutes: number };
-  /** False on an open dashboard (no SPARKDASH_TOKEN and not loopback): scans cannot be started. */
+  /** The VulnHunter opt-in setting (Settings); off by default. */
+  enabled: boolean;
+  /** Same as `enabled`: scans, installs and harness-command changes are refused until it is on. */
   startAllowed: boolean;
   startBlockedReason: string | null;
   /** VULNHUNT_ALLOWED_HOSTS: when not empty, scans may only clone from these hosts. */

@@ -822,7 +822,6 @@ registerVulnHuntRoutes(app, {
   allowRun: allowVulnHunt,
   principalKey,
   rejectLimited,
-  bindHost: BIND_HOST,
 });
 
 // ─── LLM launchers: register a directory with start.sh / stop.sh and run it ───
