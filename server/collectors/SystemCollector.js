@@ -404,7 +404,7 @@ export class SystemCollector {
     const amdVram = this._sumDeviceVram(amdDevices);
     const devices = [...nvidiaDevices, ...amdDevices];
     const gpu = this._aggregateGpuDevices(devices);
-      if (!nvidiaDevices.length) this.nvidiaComputeAppsCache.clear();
+    if (!nvidiaDevices.length) this.nvidiaComputeAppsCache.clear();
     const vram = this._combineVram(nvidiaVram, amdVram);
 
     // Estimate total system power: GPU draw + CPU draw + ~20W CX7/peripherals
