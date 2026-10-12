@@ -31,6 +31,13 @@ import {
 const FAST_TIMER_DOMAINS = ["gpu", "cpu", "network", "ram", "memory"];
 
 /**
+ * How often the resident-model helper (one read-only SSH round trip that asks
+ * the unit's docker for vLLM containers) runs. Slow on purpose: loaded models
+ * change rarely, and it is an SSH exec rather than an HTTP probe.
+ */
+const RESIDENT_MODELS_POLL_MS = 30_000;
+
+/**
  * Liveness retry schedule. Network failures widen gradually — a rebooting host
  * comes back on its own. Credential failures get a handful of quick attempts
  * and then effectively stop: they are a configuration problem, and hammering a
@@ -277,6 +284,10 @@ export class SparkMonitor {
     if (!this._llmMonitoringEnabled()) {
       this._metrics.llm = [];
     }
+    if (!this._residentModelsEnabled()) {
+      this._metrics.residentModels = [];
+      delete this._lastSuccess.residentModels;
+    }
 
     // ComfyUI probe — create / update / clear
     if (this._comfyMonitoringEnabled()) {
@@ -349,6 +360,13 @@ export class SparkMonitor {
     if (role === "worker") return false;
     if (role === "head") return true;
     return spark?.llmMonitoring !== false;
+  }
+
+  /** Resident-model discovery: LLM monitoring on, remote, and a Linux host. */
+  _residentModelsEnabled(spark = this.spark) {
+    if (!this._llmMonitoringEnabled(spark)) return false;
+    if (spark?.isLocal) return false;
+    return spark?.platform !== "windows" && spark?.platform !== "darwin";
   }
 
   /**
@@ -579,7 +597,7 @@ export class SparkMonitor {
       this._domainTimers[domain] = this._armDomainTimer(domain);
     }
     this._intervals.push(setInterval(() => this._pollDomain("storage"), POLL_INTERVAL_STORAGE));
-    this._intervals.push(setInterval(() => this._pollDomain("residentModels"), 30_000));
+    this._intervals.push(setInterval(() => this._pollDomain("residentModels"), RESIDENT_MODELS_POLL_MS));
     this._restartLlmPollInterval();
     this._restartComfyPollInterval();
     this._restartHermesPollInterval();
@@ -968,6 +986,9 @@ export class SparkMonitor {
     if (domain === "storage" && this.spark.storagePollDisabled) return;
     // Worker nodes: no local LLM API
     if (domain === "llm" && !this._llmMonitoringEnabled()) return;
+    // Resident models are discovered over SSH, so only for units whose LLM
+    // monitoring is on (never workers) and that are remote Linux hosts.
+    if (domain === "residentModels" && !this._residentModelsEnabled()) return;
     if (domain === "comfy" && !this._comfyMonitoringEnabled()) return;
     if (domain === "hermes" && !this._hermesMonitoringEnabled()) return;
     if (domain === "tailscale" && !this._tailscaleMonitoringEnabled()) return;
