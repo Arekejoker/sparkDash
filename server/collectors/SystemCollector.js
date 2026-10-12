@@ -4,76 +4,6 @@ import childProcess from "child_process";
 import { HOST_PATHS, GPU_MEMORY_JSON_PATH, DGX_SPARK, HARDWARE_DEFAULTS, POLL_INTERVAL_NVERR } from "../config.js";
 import { normalizeMac, WOL_INTERFACE } from "../wol.js";
 import { sshExec } from "./ssh.js";
-
-// Discover models in private vLLM containers on remote Linux units.
-// Read only; no port publication, container changes, or inference requests.
-// Each container is parsed and probed in its own try block, so one odd
-// container never drops the models found in the others.
-//
-// The output comes from a remote host, so it is bounded twice: here in the
-// script, and again when the collector parses it. The script also has to
-// finish well inside sshExec's 10 s default, or it is killed and the card
-// flaps: docker calls are capped at 2 s each, the container loop stops after
-// RESIDENT_MODELS_BUDGET_S, and every HTTP request is 1 s with a bounded read.
-const RESIDENT_MODELS_MAX = 50; // models kept
-const RESIDENT_MODELS_MAX_CONTAINERS = 20; // vLLM containers probed
-const RESIDENT_MODELS_MAX_LEN = 200; // chars per model id / container name
-const RESIDENT_MODELS_MAX_BODY = 64 * 1024; // bytes read from /v1/models
-const RESIDENT_MODELS_BUDGET_S = 5;
-const RESIDENT_MODELS_CMD = `python3 - <<'PY'
-import json, subprocess, time, urllib.request, shlex
-T0 = time.monotonic()
-MAX_MODELS = ${RESIDENT_MODELS_MAX}
-MAX_CONTAINERS = ${RESIDENT_MODELS_MAX_CONTAINERS}
-MAX_LEN = ${RESIDENT_MODELS_MAX_LEN}
-MAX_BODY = ${RESIDENT_MODELS_MAX_BODY}
-BUDGET = ${RESIDENT_MODELS_BUDGET_S}
-try:
-    ids = subprocess.check_output(['docker', 'ps', '-q'], timeout=2, text=True).split()[:200]
-    containers = json.loads(subprocess.check_output(['docker', 'inspect', *ids], timeout=2, text=True)) if ids else []
-except Exception:
-    raise SystemExit(1)
-models = []
-probed = 0
-opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-for c in containers:
-    if len(models) >= MAX_MODELS or probed >= MAX_CONTAINERS or time.monotonic() - T0 > BUDGET:
-        break
-    try:
-        if 'vllm' not in c.get('Config', {}).get('Image', '').lower():
-            continue
-        probed += 1
-        cmd = c.get('Config', {}).get('Cmd') or []
-        try:
-            args = shlex.split(' '.join(cmd))
-        except ValueError:
-            args = list(cmd)
-        port = 8000
-        for i, arg in enumerate(args):
-            if arg == '--port' and i + 1 < len(args):
-                port = int(args[i + 1])
-            elif arg.startswith('--port='):
-                port = int(arg.split('=', 1)[1])
-        if not 0 < port < 65536:
-            continue
-        name = str(c.get('Name', '')).lstrip('/')[:MAX_LEN]
-        addresses = [n.get('IPAddress') for n in c.get('NetworkSettings', {}).get('Networks', {}).values() if n.get('IPAddress')]
-        for address in addresses:
-            if time.monotonic() - T0 > BUDGET:
-                break
-            try:
-                with opener.open('http://%s:%s/v1/models' % (address, port), timeout=1) as r:
-                    data = json.loads(r.read(MAX_BODY))
-                for model in data.get('data', []):
-                    if isinstance(model.get('id'), str) and model['id'] and len(models) < MAX_MODELS:
-                        models.append({'modelId': model['id'][:MAX_LEN], 'container': name})
-                break
-            except Exception:
-                continue
-    except Exception:
-        continue
-print(json.dumps(models))
-PY`;
 import { RoceSampler } from "./roce.js";
 import {
   WINDOWS_GPU_SCRIPT,
@@ -236,41 +166,82 @@ function tagCollectionResult(result, successful) {
  * In Phase 2, this is the LOCAL path only (no SSH).
  * Remote path added in Phase 3.
  */
+// Discover models in private vLLM containers on remote Linux units.
+// Read only; no port publication, container changes, or inference requests.
+// Each container is parsed and probed in its own try block, so one odd
+// container never drops the models found in the others.
+//
+// The output comes from a remote host, so it is bounded twice: here in the
+// script, and again when the collector parses it. The script also has to
+// finish well inside sshExec's 10 s default, or it is killed and the card
+// flaps: docker calls are capped at 2 s each, the container loop stops after
+// RESIDENT_MODELS_BUDGET_S, and every HTTP request is 1 s with a bounded read.
+const RESIDENT_MODELS_MAX = 50; // models kept
+const RESIDENT_MODELS_MAX_CONTAINERS = 20; // vLLM containers probed
+const RESIDENT_MODELS_MAX_LEN = 200; // chars per model id / container name
+const RESIDENT_MODELS_MAX_BODY = 64 * 1024; // bytes read from /v1/models
+const RESIDENT_MODELS_BUDGET_S = 5;
+export const RESIDENT_MODELS_CMD = `python3 - <<'PY'
+import json, subprocess, time, urllib.request, shlex
+T0 = time.monotonic()
+MAX_MODELS = ${RESIDENT_MODELS_MAX}
+MAX_CONTAINERS = ${RESIDENT_MODELS_MAX_CONTAINERS}
+MAX_LEN = ${RESIDENT_MODELS_MAX_LEN}
+MAX_BODY = ${RESIDENT_MODELS_MAX_BODY}
+BUDGET = ${RESIDENT_MODELS_BUDGET_S}
+try:
+    ids = subprocess.check_output(['docker', 'ps', '-q'], timeout=2, text=True).split()[:200]
+    containers = json.loads(subprocess.check_output(['docker', 'inspect', *ids], timeout=2, text=True)) if ids else []
+except Exception:
+    raise SystemExit(1)
+models = []
+probed = 0
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+for c in containers:
+    if len(models) >= MAX_MODELS or probed >= MAX_CONTAINERS or time.monotonic() - T0 > BUDGET:
+        break
+    try:
+        if 'vllm' not in c.get('Config', {}).get('Image', '').lower():
+            continue
+        probed += 1
+        cmd = c.get('Config', {}).get('Cmd') or []
+        try:
+            args = shlex.split(' '.join(cmd))
+        except ValueError:
+            args = list(cmd)
+        port = 8000
+        for i, arg in enumerate(args):
+            if arg == '--port' and i + 1 < len(args):
+                port = int(args[i + 1])
+            elif arg.startswith('--port='):
+                port = int(arg.split('=', 1)[1])
+        if not 0 < port < 65536:
+            continue
+        name = str(c.get('Name', '')).lstrip('/')[:MAX_LEN]
+        addresses = [n.get('IPAddress') for n in c.get('NetworkSettings', {}).get('Networks', {}).values() if n.get('IPAddress')]
+        for address in addresses:
+            if time.monotonic() - T0 > BUDGET:
+                break
+            try:
+                with opener.open('http://%s:%s/v1/models' % (address, port), timeout=1) as r:
+                    data = json.loads(r.read(MAX_BODY))
+                for model in data.get('data', []):
+                    if isinstance(model.get('id'), str) and model['id'] and len(models) < MAX_MODELS:
+                        models.append({'modelId': model['id'][:MAX_LEN], 'container': name})
+                break
+            except Exception:
+                continue
+    except Exception:
+        continue
+print(json.dumps(models))
+PY`;
+
 /** Separates `df` output from the block-device counters in the remote storage command. */
 const REMOTE_IO_MARKER = "---sparkdash-block-io---";
 /** Samples of one disk closer together than this (ms) are the same poll and share one rate. */
 const DISK_RATE_MIN_WINDOW_MS = 250;
 
 export class SystemCollector {
-  /**
-   * Loaded models in private vLLM containers. Resolves to an array (empty when
-   * there are none) or to null when discovery itself failed (SSH or docker
-   * error, unparsable output), so a caller can tell "none" from "unknown".
-   */
-  async probeResidentModels(execute = sshExec) {
-    if (this.spark.isLocal || this.spark.platform === "windows" || this.spark.platform === "darwin") return [];
-    try {
-      const value = JSON.parse(await execute(this.spark, RESIDENT_MODELS_CMD));
-      if (!Array.isArray(value)) return null;
-      const text = (v) => (typeof v === "string" && v ? v.slice(0, RESIDENT_MODELS_MAX_LEN) : null);
-      const out = [];
-      for (const m of value) {
-        const modelId = text(m?.modelId);
-        const container = text(m?.container);
-        if (modelId && container) out.push({ modelId, container });
-        if (out.length >= RESIDENT_MODELS_MAX) break;
-      }
-      return out;
-    } catch {
-      return null;
-    }
-  }
-
-  /** Like probeResidentModels, but an unknown result is an empty list. */
-  async collectResidentModels(execute = sshExec) {
-    return (await this.probeResidentModels(execute)) ?? [];
-  }
-
   constructor(spark) {
     this.spark = spark;
     this._nvidiaSmiPath = this._resolveNvidiaSmiPath();
@@ -303,6 +274,35 @@ export class SystemCollector {
     this._nsenterBroken = false;
     /** Cached "container netns is the host's" check (network_mode: host). */
     this._containerNetnsShared = null;
+  }
+
+  /**
+   * Loaded models in private vLLM containers. Resolves to an array (empty when
+   * there are none) or to null when discovery itself failed (SSH or docker
+   * error, unparsable output), so a caller can tell "none" from "unknown".
+   */
+  async probeResidentModels(execute = sshExec) {
+    if (this.spark.isLocal || this.spark.platform === "windows" || this.spark.platform === "darwin") return [];
+    try {
+      const value = JSON.parse(await execute(this.spark, RESIDENT_MODELS_CMD));
+      if (!Array.isArray(value)) return null;
+      const text = (v) => (typeof v === "string" && v ? v.slice(0, RESIDENT_MODELS_MAX_LEN) : null);
+      const out = [];
+      for (const m of value) {
+        const modelId = text(m?.modelId);
+        const container = text(m?.container);
+        if (modelId && container) out.push({ modelId, container });
+        if (out.length >= RESIDENT_MODELS_MAX) break;
+      }
+      return out;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Like probeResidentModels, but an unknown result is an empty list. */
+  async collectResidentModels(execute = sshExec) {
+    return (await this.probeResidentModels(execute)) ?? [];
   }
 
   /** Collect GPU metrics (temperature, usage, power, VRAM). */

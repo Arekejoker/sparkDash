@@ -815,17 +815,19 @@ For compatibility, `SSH_CONTROL_PERSIST` is accepted as a seconds-based fallback
 ### Loaded models in private containers
 
 Overview lists all models returned by the configured, reachable LLM endpoints.
-For remote Linux units, it also checks running Docker containers whose image name
+For remote Linux units with LLM monitoring on (never workers), it also checks running Docker containers whose image name
 contains `vllm`, every 30 seconds over the existing SSH connection. It reads
 `/v1/models` on each container's private network address and configured `--port`
 (default 8000), without publishing ports or sending inference requests.
 
 This optional discovery requires Python 3 and existing permission to read Docker
-state on the remote unit; missing tools, inaccessible APIs and SSH failures return
-no discoveries. Local, macOS and Windows units are skipped. Additional models are
+state on the remote unit. At most 20 containers and 50 models are read, within a few
+seconds; a failed check keeps the previous list for about 90 seconds before clearing it.
+Local, macOS and Windows units are skipped. Additional models are
 labelled **Loaded**. Throughput, benchmarks and token totals still apply to the
 configured LLM endpoints; discovery does not add a monitored endpoint. Offline
 units do not display stale discovered models.
+
 ### Power controls (shutdown / Wake-on-LAN)
 
 - **Shutdown** (per Spark or **Shutdown All** on Overview) runs the host helper
