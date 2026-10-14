@@ -9,6 +9,10 @@ Format: version sections are listed newest first.
 
 ## [Unreleased]
 
+---
+
+## [2.40.1] — 2026-10-14
+
 ### Added
 - **GPU clock cap on each unit.** A GPU locked with `nvidia-smi -lgc` shows a `Cap 1.8 GHz` chip on the Overview card and `cap 1800 MHz` under the SM clock. NVML cannot read the lock back, so whatever sets it writes a one-line marker (`<MHz> [boot_id]`) to `/run/sparkdash/gpu-clock-cap` or `~/.config/sparkdash/gpu-clock-cap`; a marker from an earlier boot is ignored. Read-only: sparkDash changes no clocks. Thanks @danieljohnmorris (#213).
 - **AMD GPU telemetry.** Units with an AMD GPU report utilisation, temperature, power and VRAM through `amd-smi` (found on `PATH`, `AMD_SMI_PATH` or the usual ROCm locations), alongside NVIDIA cards on the same host; values `amd-smi` does not report show as unavailable instead of 0. Tested by the author on a Radeon AI PRO R9700; on other AMD hardware it is covered by fixtures only. AMD cards use `gpu` label / history index 1000 + their amd-smi index. From a contribution by @abti (#198).
