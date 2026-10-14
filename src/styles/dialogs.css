@@ -1855,3 +1855,15 @@
   gap: 8px;
   font-size: 12px;
 }
+.gpu-clock__manual summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.gpu-clock__command {
+  width: 100%;
+  font-family: var(--font-mono, "Geist Mono", ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.4;
+  resize: vertical;
+}

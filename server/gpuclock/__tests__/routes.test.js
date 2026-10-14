@@ -97,3 +97,19 @@ test("a failure on the unit reaches the browser with its own message, not a gene
     });
   }
 });
+
+test("GET /command returns a paste-able command without contacting the unit, and validates", async () => {
+  let ran = 0;
+  await withApp({ run: async () => { ran += 1; return ""; } }, async (base) => {
+    const ok = await fetch(`${base}/s1/gpu-clock/command?action=apply&maxMHz=1800&persist=1`);
+    assert.equal(ok.status, 200);
+    assert.match((await ok.json()).command, /MAX=1800; PERSIST=1/);
+    assert.equal((await fetch(`${base}/s1/gpu-clock/command?action=apply&maxMHz=abc`)).status, 400);
+    assert.equal((await fetch(`${base}/s1/gpu-clock/command?action=nope`)).status, 400);
+    assert.equal((await fetch(`${base}/h1/gpu-clock/command?action=reset`)).status, 400);
+    assert.equal(ran, 0);
+  });
+  await withApp({ run: async () => "", allow: () => false }, async (base) => {
+    assert.equal((await fetch(`${base}/s1/gpu-clock/command?action=reset`)).status, 429);
+  });
+});

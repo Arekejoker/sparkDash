@@ -24,6 +24,15 @@ export function registerGpuClockRoutes(app, { manager, registry, recordEvent, al
     })
   );
 
+  // Command to paste into a terminal on the unit itself (asks for the sudo password there).
+  app.get(
+    "/api/sparks/:id/gpu-clock/command",
+    handle(async (spark, req, res) => {
+      if (!allowRead(req)) return rejectLimited(res, "Too many requests");
+      res.json(manager.command(spark, req.query));
+    })
+  );
+
   app.put(
     "/api/sparks/:id/gpu-clock",
     handle(async (spark, req, res) => {

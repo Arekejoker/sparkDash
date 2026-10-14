@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   buildApplyProgram,
+  buildManualCommand,
   buildResetProgram,
   buildStatusProgram,
   buildUnit,
@@ -416,4 +417,62 @@ test("a dropped connection keeps the unit busy for a while, then frees it", asyn
   await assert.rejects(m.apply(spark, { maxMHz: 1800 }), (e) => e.status === 409);
   await new Promise((r) => setTimeout(r, 90));
   assert.equal((await m.apply(spark, { maxMHz: 1800 })).capMHz, 1800);
+});
+
+test("manual command: plain sudo that prompts, readable output, runs end to end", () => {
+  const sb = sandbox();
+  try {
+    const cmd = buildManualCommand("apply", { maxMHz: 1800, persist: true }, sb.paths);
+    assert.match(cmd, /^# sparkDash: run this on the Spark itself\. It will ask for your sudo password\./);
+    assert.match(cmd, /cap the GPU clock at 1800 MHz and keep it after reboot/);
+    const real = buildManualCommand("apply", { maxMHz: 1800, persist: true });
+    assert.match(real, /SUDO="sudo"/);
+    assert.match(real, /sudo -v/);
+    assert.doesNotMatch(real, /sudo -n/);
+    assert.doesNotMatch(real, /RESULT=/);
+    execFileSync("sh", ["-n", "-c", real]);
+    const out = execFileSync("sh", ["-c", cmd], { encoding: "utf8" });
+    assert.match(out, /Done: GPU clock capped at 1800 MHz and kept after reboot/);
+    assert.equal(sb.read("lock").trim(), "0,1800");
+    assert.equal(sb.read(`run/${MARKER_FILE}`).trim().startsWith("1800 "), true);
+
+    const gone = execFileSync("sh", ["-c", buildManualCommand("reset", {}, sb.paths)], { encoding: "utf8" });
+    assert.match(gone, /Done: GPU clock cap removed/);
+    assert.equal(sb.read(`units/${UNIT_NAME}`), null);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("manual command: a refusal prints the reason and exits non-zero", () => {
+  const sb = sandbox({ hwMax: 2418 });
+  try {
+    const cmd = buildManualCommand("apply", { maxMHz: 3000, persist: false }, sb.paths);
+    let err;
+    try {
+      execFileSync("sh", ["-c", cmd], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    } catch (e) {
+      err = e;
+    }
+    assert.ok(err, "must fail");
+    assert.equal(err.status, 1);
+    assert.match(err.stderr, /Error: the cap is above this GPU's maximum clock \(2418 MHz\)/);
+    assert.equal(sb.read("lock"), null);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("manual command: validated like the API, and the dashboard-side manager needs no access to the unit", () => {
+  assert.throws(() => buildManualCommand("apply", { maxMHz: "1800; id" }), (e) => e.status === 400);
+  assert.throws(() => buildManualCommand("apply", { maxMHz: 100 }), (e) => e.status === 400);
+  assert.throws(() => buildManualCommand("explode", {}), (e) => e.status === 400);
+  const m = new GpuClockManager({ run: async () => { throw new Error("must not touch the unit"); } });
+  const spark = { id: "s1", kind: "spark" };
+  assert.match(m.command(spark, { action: "apply", maxMHz: "1800", persist: "1" }).command, /MAX=1800; PERSIST=1/);
+  assert.match(m.command(spark, { action: "reset" }).command, /Done: GPU clock cap removed/);
+  for (const bad of [{}, { action: "apply" }, { action: "apply", maxMHz: "18x0" }, { action: "apply", maxMHz: "1800", minMHz: "-1" }, { action: "apply", maxMHz: ["1800"] }]) {
+    assert.throws(() => m.command(spark, bad), (e) => e.status === 400, JSON.stringify(bad));
+  }
+  assert.throws(() => m.command({ id: "h", kind: "host" }, { action: "reset" }), (e) => e.status === 400);
 });

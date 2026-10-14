@@ -592,6 +592,19 @@ export function fetchGpuClock(id: string): Promise<GpuClockStatus> {
   return apiFetch(`/api/sparks/${encodeURIComponent(id)}/gpu-clock`);
 }
 
+/** Command to paste into a terminal on the unit itself: asks for the sudo password there. */
+export function fetchGpuClockCommand(
+  id: string,
+  q: { action: "apply"; maxMHz: number; persist: boolean } | { action: "reset" }
+): Promise<{ command: string }> {
+  const params = new URLSearchParams({ action: q.action });
+  if (q.action === "apply") {
+    params.set("maxMHz", String(q.maxMHz));
+    params.set("persist", q.persist ? "1" : "0");
+  }
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/gpu-clock/command?${params}`);
+}
+
 /** Cap the GPU graphics clock now; `persist` also installs the boot service. */
 export function setGpuClock(
   id: string,

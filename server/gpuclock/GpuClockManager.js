@@ -9,6 +9,7 @@ import { hostMountNs } from "../shutdown.js";
 import { scrubbedChildEnv } from "../llmlaunch/childEnv.js";
 import {
   buildApplyProgram,
+  buildManualCommand,
   buildResetProgram,
   buildStatusProgram,
   parseCapRequest,
@@ -132,6 +133,28 @@ export class GpuClockManager {
         active: res.SVC_ACTIVE || null,
       },
     };
+  }
+
+  /**
+   * The paste-into-a-terminal command for running apply/reset on the unit by hand
+   * (plain sudo, asks for the password). Needs no access to the unit, so it works
+   * when the dashboard itself cannot use sudo or is offline.
+   * @param {object} spark
+   * @param {{ action?: unknown, maxMHz?: unknown, minMHz?: unknown, persist?: unknown }} query
+   */
+  command(spark, query = {}) {
+    assertSupported(spark);
+    const action = query.action;
+    if (action === "reset") return { command: buildManualCommand("reset", {}, this._paths) };
+    if (action !== "apply") throw httpError(400, "action must be apply or reset");
+    // Query strings: only plain digits count as numbers.
+    const num = (v, dflt) => (v === undefined ? dflt : typeof v === "string" && /^\d{1,6}$/.test(v) ? Number(v) : NaN);
+    const req = parseCapRequest({
+      maxMHz: num(query.maxMHz),
+      minMHz: num(query.minMHz, 0),
+      persist: query.persist === "1" || query.persist === "true",
+    });
+    return { command: buildManualCommand("apply", req, this._paths) };
   }
 
   /** Apply a cap; `persist` installs the boot service. */

@@ -1,12 +1,13 @@
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchGpuClock, resetGpuClock, setGpuClock } from "../api/client";
+import { fetchGpuClock, fetchGpuClockCommand, resetGpuClock, setGpuClock } from "../api/client";
 import type { GpuClockStatus } from "../api/types";
 import { GpuClockSection } from "./GpuClockSection";
 import { flush, render } from "../testing/render";
 
 vi.mock("../api/client", () => ({
   fetchGpuClock: vi.fn(),
+  fetchGpuClockCommand: vi.fn(),
   setGpuClock: vi.fn(),
   resetGpuClock: vi.fn(),
 }));
@@ -93,13 +94,48 @@ describe("GpuClockSection", () => {
     expect(setGpuClock).not.toHaveBeenCalled();
   });
 
-  it("disables everything and says why when sudo needs a password", async () => {
+  it("without sudo the buttons stay off, and you are pointed at running it on the Spark yourself", async () => {
     vi.mocked(fetchGpuClock).mockResolvedValue({ ...base, sudo: "no" });
+    vi.mocked(fetchGpuClockCommand).mockResolvedValue({ command: "# sparkDash: run this on the Spark itself.\nMAX=1800" });
     const { container } = render(<GpuClockSection sparkId="lab" />);
     await flush();
-    expect(container.textContent).toContain("passwordless sudo");
+    expect(container.textContent).toContain("cannot use sudo");
     expect(byText(container, "Apply").disabled).toBe(true);
-    expect((container.querySelector("#gpu-clock-max") as HTMLInputElement).disabled).toBe(true);
+    expect(byText(container, "Remove limit").disabled).toBe(true);
+    const details = container.querySelector("details") as HTMLDetailsElement;
+    expect(details.open).toBe(true);
+    // The inputs still work: they feed the command.
+    const input = container.querySelector("#gpu-clock-max") as HTMLInputElement;
+    expect(input.disabled).toBe(false);
+    expect(byText(container, "Show command: apply").disabled).toBe(true);
+    setInput(input, "1800");
+    await act(async () => byText(container, "Show command: apply").click());
+    await flush();
+    expect(fetchGpuClockCommand).toHaveBeenCalledWith("lab", { action: "apply", maxMHz: 1800, persist: false });
+    const box = container.querySelector("textarea") as HTMLTextAreaElement;
+    expect(box.readOnly).toBe(true);
+    expect(box.value).toContain("run this on the Spark itself");
+  });
+
+  it("builds the remove command, copies it, and shows an error when it cannot be built", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    vi.mocked(fetchGpuClockCommand).mockResolvedValueOnce({ command: "echo remove" });
+    const { container } = render(<GpuClockSection sparkId="lab" />);
+    await flush();
+    await act(async () => byText(container, "Show command: remove").click());
+    await flush();
+    await act(async () => byText(container, "Copy").click());
+    await flush();
+    expect(fetchGpuClockCommand).toHaveBeenCalledWith("lab", { action: "reset" });
+    expect(writeText).toHaveBeenCalledWith("echo remove");
+    expect(container.textContent).toContain("Copied");
+
+    vi.mocked(fetchGpuClockCommand).mockRejectedValueOnce(new Error("action must be apply or reset"));
+    await act(async () => byText(container, "Show command: remove").click());
+    await flush();
+    expect(container.textContent).toContain("action must be apply or reset");
+    expect(container.querySelector("textarea")).toBeNull();
   });
 
   it("shows a server error from a refused change", async () => {

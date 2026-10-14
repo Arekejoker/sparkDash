@@ -35,6 +35,9 @@ const DEFAULT_PATHS = Object.freeze({
   systemdRunDir: "/run/systemd/system",
   nvsmi: NVSMI_CANDIDATES,
   systemctl: "systemctl",
+  // true = the script is run by a person in a terminal on the unit: plain `sudo` (asks for the
+  // password), readable output, non-zero exit on failure.
+  manual: false,
   // Test sandbox only: run unprivileged against fake binaries and a temp tree.
   sandbox: false,
 });
@@ -105,7 +108,7 @@ function header(paths) {
   return [
     "set -u",
     'SUDO=""',
-    paths.sandbox ? ":" : '[ "$(id -u)" = 0 ] || SUDO="sudo -n"',
+    paths.sandbox ? ":" : `[ "$(id -u)" = 0 ] || SUDO="${paths.manual ? "sudo" : "sudo -n"}"`,
     `SYSTEMCTL=${paths.systemctl}`,
     `OWNER="${paths.sandbox ? "" : "-o root -g root"}"`,
     `UNIT=${paths.unitDir}/${UNIT_NAME}`,
@@ -114,11 +117,15 @@ function header(paths) {
     `BOOTID_FILE=${paths.bootIdFile}`,
     "NV=''",
     `for c in ${nv}; do if [ -x "$c" ]; then NV="$c"; break; fi; done`,
-    "fail() { printf 'RESULT=error\\nCODE=%s\\nMSG=%s\\n' \"$1\" \"$2\"; exit 0; }",
+    paths.manual
+      ? "fail() { printf 'Error: %s\\n' \"$2\" >&2; exit 1; }"
+      : "fail() { printf 'RESULT=error\\nCODE=%s\\nMSG=%s\\n' \"$1\" \"$2\"; exit 0; }",
     'digits() { tr -dc 0-9; }',
     'hwmax() { "$NV" --query-gpu=clocks.max.gr --format=csv,noheader,nounits 2>/dev/null | head -n 1 | digits; }',
     'bootid() { tr -dc "0-9a-fA-F-" < "$BOOTID_FILE" 2>/dev/null | head -c 64; }',
-    'need_sudo() { [ -z "$SUDO" ] && return 0; command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; }',
+    paths.manual
+      ? 'need_sudo() { [ -z "$SUDO" ] && return 0; command -v sudo >/dev/null 2>&1 && sudo -v; }'
+      : 'need_sudo() { [ -z "$SUDO" ] && return 0; command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; }',
     // Removes a previous service (a stale one would re-apply the old cap at boot).
     "drop_service() {",
     '  if [ -f "$UNIT" ]; then',
@@ -212,7 +219,9 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     `  [ "$($SYSTEMCTL is-active ${UNIT_NAME} 2>/dev/null)" = active ] || { rollback; fail service-failed "the service is not active; the cap applies until the next reboot"; }`,
     '  write_marker || fail marker-failed "could not record the cap"',
     "fi",
-    "printf 'RESULT=ok\\nCAP=%s\\nPERSIST=%s\\n' \"$MAX\" \"$PERSIST\"",
+    paths.manual
+      ? "if [ \"$PERSIST\" = 1 ]; then printf 'Done: GPU clock capped at %s MHz and kept after reboot (spark-gpu-clock-limit.service).\\n' \"$MAX\"; else printf 'Done: GPU clock capped at %s MHz until the next reboot.\\n' \"$MAX\"; fi"
+      : "printf 'RESULT=ok\\nCAP=%s\\nPERSIST=%s\\n' \"$MAX\" \"$PERSIST\"",
     "exit 0",
     "",
   ].join("\n");
@@ -228,7 +237,7 @@ export function buildResetProgram(overrides = {}) {
     'drop_service || fail service-failed "could not remove the existing service"',
     '$SUDO "$NV" -rgc >/dev/null 2>&1 || fail rgc-failed "nvidia-smi could not reset the clocks"',
     '$SUDO rm -f "$MARKER" || fail marker-failed "could not clear the recorded cap"',
-    "printf 'RESULT=ok\\n'",
+    paths.manual ? "printf 'Done: GPU clock cap removed.\\n'" : "printf 'RESULT=ok\\n'",
     "exit 0",
     "",
   ].join("\n");
@@ -254,4 +263,37 @@ export function parseProgramOutput(out) {
     return { RESULT: "error", CODE: "bad-output", MSG: "the unit returned an unexpected answer" };
   }
   return res;
+}
+
+/**
+ * A paste-into-a-terminal command that runs the apply/reset program on the unit by hand.
+ * Same program the dashboard runs, but with plain `sudo` (prompts for the password) and
+ * readable output. It is written to a private temp file first so `sudo` can read the
+ * terminal, and the text is plain sh the person can read before running it.
+ * @param {"apply" | "reset"} action
+ * @param {{ minMHz?: number, maxMHz?: number, persist?: boolean }} [req]
+ */
+export function buildManualCommand(action, req = {}, overrides = {}) {
+  const manual = { ...overrides, manual: true };
+  let program;
+  if (action === "apply") {
+    const r = parseCapRequest(req);
+    program = buildApplyProgram(r, manual);
+  } else if (action === "reset") {
+    program = buildResetProgram(manual);
+  } else {
+    throw Object.assign(new Error("action must be apply or reset"), { status: 400 });
+  }
+  const what = action === "apply"
+    ? `cap the GPU clock at ${req.maxMHz} MHz${req.persist === true ? " and keep it after reboot" : ""}`
+    : "remove the GPU clock cap and its boot service";
+  return [
+    "# sparkDash: run this on the Spark itself. It will ask for your sudo password.",
+    `# It will ${what}. Read it first; nothing is sent anywhere.`,
+    'f=$(mktemp) && cat > "$f" <<\'SPARKDASH_SCRIPT_EOF\'',
+    program.replace(/\n$/, ""),
+    "SPARKDASH_SCRIPT_EOF",
+    'sh "$f"; rc=$?; rm -f "$f"; [ "$rc" = 0 ]',
+    "",
+  ].join("\n");
 }

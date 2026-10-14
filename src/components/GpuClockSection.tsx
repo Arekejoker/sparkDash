@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchGpuClock, resetGpuClock, setGpuClock } from "../api/client";
+import { fetchGpuClock, fetchGpuClockCommand, resetGpuClock, setGpuClock } from "../api/client";
 import type { GpuClockStatus } from "../api/types";
 
 const MIN_CAP_MHZ = 300;
@@ -23,6 +23,10 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
   const [persist, setPersist] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  /** Command for running the change by hand on the unit (plain sudo, asks for the password). */
+  const [manual, setManual] = useState<{ title: string; command: string } | null>(null);
+  const [manualError, setManualError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   /** Only the newest request may write state: a slow answer for an older unit must not win. */
   const latest = useRef(0);
 
@@ -57,6 +61,8 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
     setMessage(null);
     setMaxInput("");
     setPersist(false);
+    setManual(null);
+    setManualError(null);
     void load({ sync: true });
     return () => {
       latest.current += 1;
@@ -118,6 +124,33 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
     void run(() => resetGpuClock(sparkId), "Cap removed.");
   };
 
+  const showCommand = async (kind: "apply" | "reset") => {
+    setManualError(null);
+    setCopied(false);
+    try {
+      const q = kind === "apply" ? ({ action: "apply", maxMHz, persist } as const) : ({ action: "reset" } as const);
+      const { command } = await fetchGpuClockCommand(sparkId, q);
+      setManual({
+        title: kind === "apply" ? `Cap at ${maxMHz} MHz${persist ? " and keep after reboot" : ""}` : "Remove the cap",
+        command,
+      });
+    } catch (err) {
+      setManual(null);
+      setManualError(err instanceof Error ? err.message : "Could not build the command");
+    }
+  };
+
+  const copyCommand = async () => {
+    if (!manual) return;
+    try {
+      await navigator.clipboard.writeText(manual.command);
+      setCopied(true);
+    } catch {
+      // Plain-http dashboards have no clipboard API: the text box below is selectable.
+      setCopied(false);
+    }
+  };
+
   return (
     <div className="gpu-clock">
       <label className="field-label" htmlFor="gpu-clock-max">
@@ -148,7 +181,7 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
           placeholder={hwMax != null ? `${MIN_CAP_MHZ}–${hwMax}` : "MHz"}
           value={maxInput}
           onChange={(e) => setMaxInput(e.target.value)}
-          disabled={busy || sudoMissing}
+          disabled={busy}
         />
         <span className="gpu-clock__unit">MHz max</span>
         <button type="button" className="btn btn--sm" onClick={apply} disabled={busy || !valid || sudoMissing}>
@@ -163,13 +196,13 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
           type="checkbox"
           checked={persist}
           onChange={(e) => setPersist(e.target.checked)}
-          disabled={busy || sudoMissing}
+          disabled={busy}
         />
         Keep after reboot (installs a system service)
       </label>
       {sudoMissing ? (
         <p className="field-hint is-warn">
-          The user that runs the change needs passwordless sudo on this unit (<code>NOPASSWD: ALL</code>) to change the clock. Nothing was changed.
+          The dashboard cannot use sudo on this unit (it would need <code>NOPASSWD: ALL</code>), so it will not change anything. Run the change on the Spark yourself below: sudo asks for your password there.
         </p>
       ) : (
         <p className="field-hint">
@@ -182,6 +215,33 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
           Enter a whole number from {MIN_CAP_MHZ}{hwMax != null ? ` to ${hwMax}` : ""}.
         </p>
       )}
+      <details className="gpu-clock__manual" open={sudoMissing || manual != null}>
+        <summary>Run it on the Spark yourself</summary>
+        <p className="field-hint">
+          Paste the command into a terminal on the Spark. It uses plain <code>sudo</code>, so it asks for your password
+          there. It is the same steps the Apply and Remove buttons run.
+        </p>
+        <div className="gpu-clock__row">
+          <button type="button" className="btn btn--sm" onClick={() => void showCommand("apply")} disabled={!valid}>
+            Show command: apply
+          </button>
+          <button type="button" className="btn btn--sm btn--ghost" onClick={() => void showCommand("reset")}>
+            Show command: remove
+          </button>
+        </div>
+        {manualError && <p className="field-hint is-warn" role="status">{manualError}</p>}
+        {manual && (
+          <>
+            <p className="gpu-clock__now">{manual.title}</p>
+            <textarea className="gpu-clock__command" readOnly rows={8} value={manual.command} aria-label="Command to run on the Spark" onFocus={(e) => e.currentTarget.select()} />
+            <div className="gpu-clock__row">
+              <button type="button" className="btn btn--sm" onClick={() => void copyCommand()}>
+                {copied ? "Copied" : "Copy"}
+              </button>
+            </div>
+          </>
+        )}
+      </details>
       {loadError && <p className="field-hint is-warn" role="status">Could not refresh: {loadError}</p>}
       {message && (
         <p className={`field-hint ${message.ok ? "is-ok" : "is-warn"}`} role="status">
