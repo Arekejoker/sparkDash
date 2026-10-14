@@ -540,6 +540,22 @@ sparkDash only needs the engine's HTTP port; it does not care how the engine was
 
 ## GPU clock cap
 
+### Set it from the dashboard
+
+**Edit unit → GPU clock cap** (Spark units on Linux only; hosts, Windows and Macs do not show it) caps the graphics clock with `nvidia-smi -lgc 0,MAX`, the same thing the standalone [sparkLimiter](https://github.com/MiaAI-Lab/sparkLimiter) script does. It shows the cap in effect and the GPU maximum, and has:
+
+- **Apply** — caps the clock now (300 MHz up to the GPU maximum). It is lost at the next reboot unless the option below is on.
+- **Keep after reboot** — installs `spark-gpu-clock-limit.service` (a oneshot unit that re-applies the cap at boot; the same name sparkLimiter uses, so the two manage one unit). Switching it off removes the unit.
+- **Remove limit** — runs `nvidia-smi -rgc`, removes the service and the marker.
+
+It acts at once on the unit's saved connection settings; it is not part of **Save**. Activity records each change.
+
+Needs root on the unit: the local unit runs as root through the host mount namespace (like Shutdown), a remote one uses `sudo -n`, so its SSH user needs **passwordless sudo** (`NOPASSWD`); with a password-protected sudo the controls are disabled and nothing is changed. A cap above the GPU's maximum is refused, only validated whole numbers reach the unit, and `nvidia-smi` is only taken from root-owned directories. API: `GET|PUT|DELETE /api/sparks/:id/gpu-clock` (same token and rate limits as the power routes).
+
+The current value is shown on the unit: `cap 1800 MHz` under the SM clock on the GPU panel and a `Cap 1.8 GHz` chip on the Overview card. A unit capped with the standalone script shows no value until you press **Apply** once, because that script writes no marker.
+
+### How the value is read
+
 `nvidia-smi -lgc 0,<MHz>` locks the max graphics clock, but NVML has no way to
 read that lock back (`clocks.max.*` stays at the hardware max). So whoever sets
 the lock drops a one-line marker on the Spark, and sparkDash shows it as
@@ -714,6 +730,7 @@ sparkDash/
 | DELETE | `/api/events` · `/api/fleet-energy` | Clear Activity or Fleet energy: everything, or only entries older than `?olderThanMs=` |
 | DELETE | `/api/llm-token-totals` | Reset Token totals (all Sparks, or one with `?sparkId=`) |
 | GET | `/api/health` · `/api/auth/status` | Bind / auth mode; whether a token is required and accepted |
+| GET · PUT · DELETE | `/api/sparks/:id/gpu-clock` | GPU clock cap on a Spark unit: status, apply (`maxMHz`, `persist`), remove (see [GPU clock cap](#gpu-clock-cap)) |
 | POST | `/api/sparks/:id/shutdown` · `/wake` · `/api/sparks/shutdown-all` · `/wake-all` | Power controls (see [Power controls](#power-controls-shutdown--wake-on-lan)) |
 | POST | `/api/sparks/:id/refresh/:domain` | Re-poll one domain now (`storage` or `llm` only) |
 | GET/POST/DELETE | `/api/sparks/:id/llm/showcase[/:sessionId]` | Prompt Showcase sessions |

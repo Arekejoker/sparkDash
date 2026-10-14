@@ -1819,3 +1819,39 @@
   line-height: 1.4;
   color: var(--color-danger);
 }
+
+/* GPU clock cap block in Edit unit */
+.gpu-clock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+.gpu-clock__now {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.gpu-clock__now b {
+  color: var(--color-text);
+}
+.gpu-clock__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.gpu-clock__row input[type="number"] {
+  width: 120px;
+}
+.gpu-clock__unit {
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.gpu-clock__check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}

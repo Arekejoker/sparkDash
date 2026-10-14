@@ -205,6 +205,26 @@ export interface GpuThrottle {
   detail: string;
 }
 
+/** GET /api/sparks/:id/gpu-clock: the GPU clock cap (`nvidia-smi -lgc`) and its boot service. */
+export type GpuClockStatus =
+  | { supported: false; reason?: string }
+  | {
+      supported: true;
+      /** GPU maximum graphics clock (MHz). */
+      hwMaxMHz: number | null;
+      /** Cap in effect right now (MHz), null when none is recorded. */
+      capMHz: number | null;
+      /** "root" runs directly, "yes" = passwordless sudo works, "no" = it does not. */
+      sudo: "root" | "yes" | "no";
+      service: {
+        installed: boolean;
+        /** "min,max" the service applies at boot. */
+        clocks: string | null;
+        enabled: string | null;
+        active: string | null;
+      };
+    };
+
 /** One health finding for a Spark (server rules in server/health/HealthEvaluator.js). */
 export interface HealthFinding {
   id: "thermal" | "low-power" | "memory" | "xid" | "oom" | "concurrency" | "link-speed" | "roce-link" | "roce-loss";

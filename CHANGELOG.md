@@ -9,6 +9,9 @@ Format: version sections are listed newest first.
 
 ## [Unreleased]
 
+### Added
+- **GPU clock cap from Edit unit.** Spark units get a **GPU clock cap** section (Linux Spark units only): cap the graphics clock with `nvidia-smi -lgc 0,MAX`, optionally **keep it after reboot** with a systemd service (`spark-gpu-clock-limit.service`, the unit sparkLimiter installs), or remove it again. It shows the cap in effect and the GPU maximum, and the value appears on the unit's card and GPU panel. Runs as root locally and through `sudo -n` over SSH, so the SSH user needs passwordless sudo; nothing changes without it. API: `GET|PUT|DELETE /api/sparks/:id/gpu-clock`.
+
 ---
 
 ## [2.40.1] — 2026-10-14

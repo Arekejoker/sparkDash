@@ -10,6 +10,7 @@ import type {
   HealthResponse,
   InferenceActivity,
   HermesBatchUpdateResponse,
+  GpuClockStatus,
   HermesUpdatesResponse,
   LauncherAction,
   LauncherJob,
@@ -573,6 +574,27 @@ export function shutdownAllSparks(): Promise<BatchPowerResult> {
 /** Send WoL to all registered Sparks that have a MAC configured. */
 export function wakeAllSparks(): Promise<BatchPowerResult> {
   return apiFetch("/api/sparks/wake-all", { method: "POST" });
+}
+
+// ─── GPU clock cap (Spark units) ─────────────────────────
+export function fetchGpuClock(id: string): Promise<GpuClockStatus> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/gpu-clock`);
+}
+
+/** Cap the GPU graphics clock now; `persist` also installs the boot service. */
+export function setGpuClock(
+  id: string,
+  body: { maxMHz: number; minMHz?: number; persist: boolean }
+): Promise<{ success: boolean; capMHz: number; persist: boolean }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/gpu-clock`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Remove the cap and the boot service. */
+export function resetGpuClock(id: string): Promise<{ success: boolean }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/gpu-clock`, { method: "DELETE" });
 }
 
 // ─── Hermes update preview ───────────────────────────────
