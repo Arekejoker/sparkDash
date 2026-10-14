@@ -66,3 +66,26 @@ test("_getRemoteGpu: no marker → clockCapMHz null", async () => {
   assert.equal(gpu.throttle.clockCapMHz, null);
   assert.equal(gpu.throttle.detail, "Clocks not limited");
 });
+
+test("_readLocalClockCap: finds the marker under the host root mount (Docker)", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clockcap-"));
+  try {
+    const c = new SystemCollector({ id: "local", isLocal: true, ssh: { user: "alice" } });
+    assert.equal(await c._readLocalClockCap({ root, own: false }), null);
+    fs.mkdirSync(path.join(root, "home/alice/.config/sparkdash"), { recursive: true });
+    fs.writeFileSync(path.join(root, "home/alice/.config/sparkdash/gpu-clock-cap"), "1700\n");
+    assert.equal(await c._readLocalClockCap({ root, own: false }), 1700);
+    fs.mkdirSync(path.join(root, "run/sparkdash"), { recursive: true });
+    fs.writeFileSync(path.join(root, "run/sparkdash/gpu-clock-cap"), "1500\n");
+    assert.equal(await c._readLocalClockCap({ root, own: false }), 1500);
+    // A user name that is not a plain account name is never put in a path.
+    const evil = new SystemCollector({ id: "local", isLocal: true, ssh: { user: "../x" } });
+    fs.rmSync(path.join(root, "run"), { recursive: true });
+    assert.equal(await evil._readLocalClockCap({ root, own: false }), null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

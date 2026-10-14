@@ -1026,10 +1026,20 @@ export class SystemCollector {
     }
   }
 
-  /** Local-host twin of CLOCK_CAP_CMD: read the marker and boot_id directly. */
-  async _readLocalClockCap() {
+  /**
+   * Local-host twin of CLOCK_CAP_CMD: read the marker and boot_id directly.
+   * In Docker the marker lives on the host, so the host root mount is tried too.
+   */
+  async _readLocalClockCap({ root = HOST_PATHS.ROOT, own = true } = {}) {
     const home = process.env.HOME || "";
-    const files = CLOCK_CAP_FILES.map((f) => f.replace("$HOME", home));
+    const user = String(this.spark?.ssh?.user || "");
+    const files = own ? CLOCK_CAP_FILES.map((f) => f.replace("$HOME", home)) : [];
+    if (root) {
+      files.push(path.join(root, "run/sparkdash/gpu-clock-cap"));
+      if (/^[a-z_][a-z0-9_-]{0,31}$/i.test(user)) {
+        files.push(path.join(root, "home", user, ".config/sparkdash/gpu-clock-cap"));
+      }
+    }
     let marker = "";
     for (const f of files) {
       try {
