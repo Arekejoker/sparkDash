@@ -66,6 +66,12 @@ Monitored units run **Linux**, **macOS**, or **Windows** (a Windows PC with an N
 
 ## Latest version changelog
 
+### Version 2.40.1
+- **Temps page** with day and week GPU temperature graphs for every unit, backed by a minute-resolution history kept for 7 days.
+- **GPU clock cap** set with `nvidia-smi -lgc` shows on each unit (read-only).
+- **Mac units** come online and report CPU, GPU and RAM through macmon.
+- **Fixes**: GPU and energy data on remote units whose login shell is zsh, and the TensorFold Slots tile now counts occupied lanes.
+
 ### Version 2.40.0
 - **Hide any Overview panel**: Settings has switches for Recent activity and for each of the four tiles (Fleet decode, Fleet power, Memory in use, Tokens today), next to Fleet energy and LLM token totals.
 - **LM Studio and Ollama** are detected by their own endpoints, so they are no longer labelled SGLang or vLLM; LLM panels match their port, and the Add wizard and LLM panels have LM Studio / Ollama / TensorFold port presets.
@@ -495,7 +501,7 @@ The exporter reads the snapshot sparkDash already holds, so scraping adds no SSH
 | `sparkdash_up` | gauge | | 1 when the unit answered its last liveness check. An unreachable unit exports `sparkdash_up 0` and nothing else |
 | `sparkdash_uptime_seconds` | gauge | | Host uptime |
 | `sparkdash_collector_last_success_timestamp_seconds` | gauge | `collector` | Unix time of the last poll of each collector (`gpu`, `cpu`, `ram`, `memory`, `network`, `storage`, `llm`, `roce`) that returned real data, not zeroed defaults. A stuck collector stops advancing while `sparkdash_up` stays 1, so alert on `time() - sparkdash_collector_last_success_timestamp_seconds > 60`. Absent until a collector has succeeded |
-| `sparkdash_gpu_info` | gauge | `gpu`, `name`, `uuid` | Always 1 |
+| `sparkdash_gpu_info` | gauge | `gpu`, `name`, `uuid` | Always 1. `gpu` is the nvidia-smi index for an NVIDIA card; an AMD card (amd-smi) is its index plus 1000, so `gpu="1000"` is the first AMD card. Per-card chart history uses the same number (`gpu.1000.*`) |
 | `sparkdash_gpu_utilization_ratio` | gauge | `gpu` | 0–1 |
 | `sparkdash_gpu_temperature_celsius` | gauge | `gpu` | |
 | `sparkdash_gpu_power_watts`, `sparkdash_gpu_power_limit_watts` | gauge | `gpu` | |
@@ -589,6 +595,47 @@ sparkDash only needs the engine's HTTP port; it does not care how the engine was
 - A Docker-based start script that detaches (`docker run -d`) shows **Stopped** in the Models panel because the script's process group is gone, while the port probe shows **Serving**. Treat the port status as the source of truth (the **Output** button re-opens the script's output while it runs).
 - Provisioning models (pulling weights, choosing a recipe) stays with your own tool; the Models panel only runs the `start.sh` / `stop.sh` you register.
 
+---
+
+## GPU clock cap
+
+### Set it from the dashboard
+
+**Edit unit → GPU clock cap** (Spark units on Linux only; hosts, Windows and Macs do not show it) caps the graphics clock with `nvidia-smi -lgc 0,MAX`, the same thing the standalone [sparkLimiter](https://github.com/MiaAI-Lab/sparkLimiter) script does. It shows the cap in effect and the GPU maximum, and has:
+
+- **Apply** — caps the clock now (300 MHz up to the GPU maximum). It is lost at the next reboot unless the option below is on.
+- **Keep after reboot** — installs `spark-gpu-clock-limit.service` (a oneshot unit that re-applies the cap at boot; the same name sparkLimiter uses, so the two manage one unit). Switching it off removes the unit.
+- **Remove limit** — runs `nvidia-smi -rgc`, removes the service and the marker.
+
+It acts at once on the unit's saved connection settings; it is not part of **Save**. Activity records each change.
+
+Needs root on the unit: the local unit runs as root through the host mount namespace (like Shutdown), a remote one uses `sudo -n`, so its SSH user needs **passwordless sudo for everything** (`NOPASSWD: ALL`, because it runs `nvidia-smi`, `systemctl`, `install`, `rm` and a small `sh -c`); with a password-protected or command-scoped sudo the controls are disabled or the change is refused, and nothing is changed. If starting the boot service fails, the previous service is restored and the cap stays applied until the next reboot. A cap above the GPU's maximum is refused, only validated whole numbers reach the unit, and `nvidia-smi` is only taken from fixed system paths (`/usr/bin`, `/usr/local/bin`, `/bin`), never from `PATH`. API: `GET|PUT|DELETE /api/sparks/:id/gpu-clock` (same token and rate limits as the power routes).
+
+The current value is shown on the unit: `cap 1800 MHz` under the SM clock on the GPU panel and a `Cap 1.8 GHz` chip on the Overview card. A unit capped with the standalone script shows no value until you press **Apply** once, because that script writes no marker.
+
+### How the value is read
+
+`nvidia-smi -lgc 0,<MHz>` locks the max graphics clock, but NVML has no way to
+read that lock back (`clocks.max.*` stays at the hardware max). So whoever sets
+the lock drops a one-line marker on the Spark, and sparkDash shows it as
+`cap 1800 MHz` under the SM clock on the GPU panel, a `Cap 1.8 GHz` chip on the
+Overview card, and `gpu.throttle.clockCapMHz` in the API.
+
+```bash
+# set
+sudo nvidia-smi -lgc 0,1800
+mkdir -p ~/.config/sparkdash
+echo "1800 $(cat /proc/sys/kernel/random/boot_id)" > ~/.config/sparkdash/gpu-clock-cap
+
+# revert
+sudo nvidia-smi -rgc
+rm -f ~/.config/sparkdash/gpu-clock-cap
+```
+
+The marker is read from `/run/sparkdash/gpu-clock-cap` (for a root-run unit)
+or `~/.config/sparkdash/gpu-clock-cap` of the SSH user. The optional boot_id
+makes a stale marker disappear after a reboot, when the lock is gone too.
+
 ## Quick start
 
 ```bash
@@ -620,6 +667,15 @@ For development with Docker (source-mounted, HMR):
 ```bash
 docker compose -f docker-compose.dev.yml up --build
 ```
+
+**Published image (no local build):** each release tag (`v*`) is built for arm64 and amd64 and pushed to `ghcr.io/miaai-lab/sparkdash`. `docker-compose.image.yml` runs that image with the same host mounts and environment as `docker-compose.yml`; it is the only file the host needs, and `./config` next to it holds the runtime state:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/MiaAI-Lab/sparkDash/main/docker-compose.image.yml
+docker compose -f docker-compose.image.yml up -d
+```
+
+It follows `latest` unless `SPARKDASH_VERSION` names a release (`SPARKDASH_VERSION=<version>`); update with `docker compose -f docker-compose.image.yml pull` and `up -d`. The frontend history window (`VITE_HISTORY_HOURS`) is fixed at the default 8 hours in the published image; build locally to change it.
 
 **Remote units + SSH keys (Docker):** SSH is executed *inside* the container on the sparkDash host (typically the head DGX). Configured LAN IPs are from **that** host’s point of view, not your laptop. OpenSSH looks for keys under `/root/.ssh` in the container — the host user’s `~/.ssh` is not used unless you bind-mount it. Uncomment this volume in `docker-compose.yml` (and recreate the container):
 
@@ -704,9 +760,10 @@ sparkDash/
 │   └── validate.js      Host/user validation (SSRF-minded)
 ├── config/              Runtime state (volume; secrets gitignored)
 ├── assets/              Logo (bolt.svg) and legacy media
-├── .github/             README screenshot and Showcase video
+├── .github/             README screenshot and Showcase video; image publish workflow
 ├── Dockerfile           Production multi-stage arm64
 ├── docker-compose.yml   Production
+├── docker-compose.image.yml  Production from the published image
 ├── docker-compose.dev.yml
 └── deploy.sh            Rebuild / recreate helpers
 ```
@@ -727,11 +784,12 @@ sparkDash/
 | GET | `/api/fleet-energy/history` | Hourly / daily energy buckets for the Fleet energy page |
 | GET/DELETE | `/api/fleet-energy/monthly` | Permanent per-UTC-month energy totals; `DELETE` needs `?month=YYYY-MM` or `?all=true&confirm=delete-all-history` |
 | GET | `/api/llm-token-totals` · `/api/llm-token-totals/history` | Cumulative LLM tokens by model, and the hourly / daily history behind the Token totals page |
-| GET | `/api/sparks/:id/gpu-history` | Last hours of GPU utilization, temperature and power % (`windowMs`, up to 8 h; parallel arrays) |
+| GET | `/api/sparks/:id/gpu-history` | GPU utilization, temperature and power % (`windowMs`; up to 8 h at ~2 s resolution, up to 7 days at minute resolution from the long-retention store; parallel arrays) |
 | GET/POST | `/api/restart` | `GET` says whether the server can restart itself (Docker with a restart policy); `POST` shuts down cleanly so Docker starts it again |
 | DELETE | `/api/events` · `/api/fleet-energy` | Clear Activity or Fleet energy: everything, or only entries older than `?olderThanMs=` |
 | DELETE | `/api/llm-token-totals` | Reset Token totals (all Sparks, or one with `?sparkId=`) |
 | GET | `/api/health` · `/api/auth/status` | Bind / auth mode; whether a token is required and accepted |
+| GET · PUT · DELETE | `/api/sparks/:id/gpu-clock` | GPU clock cap on a Spark unit: status, apply (`maxMHz`, `persist`), remove (see [GPU clock cap](#gpu-clock-cap)) |
 | POST | `/api/sparks/:id/shutdown` · `/wake` · `/api/sparks/shutdown-all` · `/wake-all` | Power controls (see [Power controls](#power-controls-shutdown--wake-on-lan)) |
 | POST | `/api/sparks/:id/refresh/:domain` | Re-poll one domain now (`storage` or `llm` only) |
 | GET/POST/DELETE | `/api/sparks/:id/llm/showcase[/:sessionId]` | Prompt Showcase sessions |
@@ -840,6 +898,7 @@ Copy `.env.example` to `.env` if needed:
 | `HOST_SYS_PATH` | `/host/sys` | Host sys mount |
 | `HOST_ROOT_PATH` | `/host/root` | Host root mount |
 | `SSH_IDENTITY_FILE` | _(unset)_ | Path **inside the process** to a private key (`ssh -i`). Use when the bind-mount is not a default OpenSSH name. |
+| `MACMON_PATH` | _(unset)_ | macOS units: path to [macmon](https://github.com/vladkens/macmon) on the Mac, when it is not in `/opt/homebrew/bin`, `/usr/local/bin`, `~/.cargo/bin` or the SSH PATH. macmon (no sudo) supplies CPU / GPU usage, temperatures, RAM and system power for Mac units. |
 | `SSH_CONTROL_PERSIST_SECONDS` | `60` | Idle SSH transport persistence in seconds, capped at `3600`. Set to `0` to disable multiplexing. |
 | `FLEET_ENERGY_JSON_PATH` | `config/fleet-energy.json` | Rolling fleet-energy persistence path |
 | `FLEET_ENERGY_MONTHLY_JSON_PATH` | `config/fleet-energy-monthly.json` | Permanent monthly energy archive |
@@ -863,6 +922,22 @@ For compatibility, `SSH_CONTROL_PERSIST` is accepted as a seconds-based fallback
    - **LLM host** (optional, `llmHost` in the unit's config): when the model API listens on one specific address of a multi-interface Spark, pin it here; probes and benchmarks then use it instead of the LAN IP (SSH keeps using the SSH host). An unreachable `llmHost` is never tunnelled to the SSH host's loopback.
 4. **Test** shows pass/fail/skipped for host collectors/SSH and each enabled service (LLM, ComfyUI, Hermes Agent, Tailnet). Every enabled capability must pass; disable an unavailable optional service before saving if it should not be monitored.
 5. Save — a tab appears and metrics start streaming.
+
+### Loaded models in private containers
+
+Overview lists all models returned by the configured, reachable LLM endpoints.
+For remote Linux units with LLM monitoring on (never workers), it also checks running Docker containers whose image name
+contains `vllm`, every 30 seconds over the existing SSH connection. It reads
+`/v1/models` on each container's private network address and configured `--port`
+(default 8000), without publishing ports or sending inference requests.
+
+This optional discovery requires Python 3 and existing permission to read Docker
+state on the remote unit. At most 20 containers and 50 models are read, within a few
+seconds; a failed check keeps the previous list for about 90 seconds before clearing it.
+Local, macOS and Windows units are skipped. Additional models are
+labelled **Loaded**. Throughput, benchmarks and token totals still apply to the
+configured LLM endpoints; discovery does not add a monitored endpoint. Offline
+units do not display stale discovered models.
 
 ### Power controls (shutdown / Wake-on-LAN)
 
@@ -992,6 +1067,42 @@ Rates are derived from per-probe cumulative counter diffs (or SGLang sticky thro
 Live probes use the LAN IP on remote units, and fall back to an SSH forward to the unit's loopback after two failed direct probes (the LLM panel then shows a **via SSH** chip). **Decode, prefill and quality benches** try that same HTTP target first; if it is closed they open an SSH local-forward onto the remote’s `127.0.0.1` so loopback-bound servers (ds4 `start.sh` default) can still be measured. The tunnel is torn down when the job finishes or is cancelled.
 
 ---
+
+## Optional inference request activity
+
+For shared inference deployments, an optional Overview card groups in-flight requests and recent completions by approved **display labels**. It is disabled by default and makes no source requests until configured. The gateway must already expose sanitized JSON; sparkDash does not intercept inference, handle client API keys or infer their owners.
+
+Set these variables in the **server's environment**, then restart sparkDash:
+
+```dotenv
+SPARKDASH_INFERENCE_ACTIVITY_URL=http://127.0.0.1:9001/activity
+SPARKDASH_INFERENCE_ACTIVITY_LABELS=service-a,user-1
+```
+
+The URL accepts HTTP/S with an explicit loopback or RFC1918 IP literal only; DNS names, public/link-local targets, credentials, queries, fragments and redirects are rejected. Requests carry no source credentials, time out after 5 seconds and read at most 64 KiB. There is no browser-editable URL or API-key mapping. These labels are visible to anyone allowed to view the dashboard: protect the dashboard with its normal authentication or private access, and **never configure a key, token, IP, email or prompt as a label**.
+
+The source must return `application/json` with this shape:
+
+```json
+{
+  "available": true,
+  "generatedAt": "2026-10-11T12:00:00Z",
+  "active": [
+    {"principal": "service-a", "model": "model-a", "count": 2,
+     "oldestAgeMs": 900, "newestAgeMs": 100}
+  ],
+  "recent": [
+    {"principal": "user-1", "model": "model-a", "durationMs": 400, "ageMs": 1000}
+  ],
+  "overflowed": false
+}
+```
+
+`generatedAt` is the source sampling time, refreshed by the source on each sample. Both arrays are required. The first 256 active input rows are normalized and grouped by principal/model: duplicate groups sum counts, take the maximum oldest age and minimum newest age. Counts are independently positive safe integers, not limited to 256; an unsafe individual count or combined total makes the sample unavailable. Truncated input is marked incomplete. Snake-case `oldest_age_ms`/`newest_age_ms` are also accepted. Principals not in the configured label list become `unknown`; model labels are optional non-secret identifiers. URL/IP labels and recognizable credential-like model segments become `unknown`, but this is not a general secret detector: the source must never place credentials or user content in metadata. Recent rows may provide an actual HTTP `status`, otherwise no status is invented. At most 24 recent rows are retained in memory, with a 10-minute recent window and bounded non-negative ages/durations. Extra fields—including keys, headers, IPs, request IDs and prompts—are discarded, not persisted. Source bodies, failures and URLs are not logged or returned by the dashboard API.
+
+The source is read at most once per 5 seconds, shared between dashboard viewers. The server judges sample freshness: samples older than 30 seconds, invalid payloads and failed reads show **unknown**, not zero. The browser trusts the server's `available`, without comparing server timestamps to its own clock. A separate 30-second no-response timer hides the last live display if a later browser fetch hangs, and resets on a successful response. A fresh empty `active` array is a measured zero. The read-only `/api/inference/activity` route uses the dashboard's existing GET access policy and `Cache-Control: no-store`: loopback GETs remain open, while a token-protected remote bind requires the dashboard token. Configuration is not writable through that route or Settings. The card is absent when no URL is configured, including when the normal sidebar cards are hidden.
+
+**In flight includes queued, prefill and decoding HTTP requests.** It is not the number of active GPU slots, does not distinguish engine queueing, and does not measure per-key token throughput. This card needs an external sanitized activity source; an unmodified model server without that source remains unchanged.
 
 ## Contributing
 

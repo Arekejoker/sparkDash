@@ -24,6 +24,8 @@ import { inspectHealth } from "./health.js";
 import { getSettings, updateSettings, loadSettings } from "./settings.js";
 import { broadcastForLanIp, effectiveMac, normalizeMac, sendWol } from "./wol.js";
 import { remoteShutdownCommand, spawnLocalShutdown } from "./shutdown.js";
+import { GpuClockManager } from "./gpuclock/GpuClockManager.js";
+import { registerGpuClockRoutes } from "./gpuclock/routes.js";
 import {
   decodeBenchManager,
   DECODE_BENCH_DEFAULTS,
@@ -40,6 +42,7 @@ import {
   normalizeQualityOptions,
 } from "./collectors/QualityBench.js";
 import { showcaseManager } from "./collectors/ShowcaseManager.js";
+import { InferenceActivityStore } from "./collectors/InferenceActivity.js";
 import { llmProbeHost } from "./collectors/llmHost.js";
 import { onceClose, resolveLlmHttpTarget } from "./collectors/llmTunnel.js";
 import { formatLlmBaseUrl, parseLlmTargetInput } from "../src/shared/llmTarget.js";
@@ -294,6 +297,7 @@ function consumeBenchStartQuota(req, res) {
 
 // ─── Spark registry ──────────────────────────────────────
 const registry = new SparkRegistry();
+const inferenceActivity = new InferenceActivityStore();
 
 const fleetEnergyTracker = new FleetEnergyTracker({
   nodeIds: registry.sparkIds,
@@ -309,8 +313,18 @@ const eventLog = new EventLog({
 });
 
 // ─── GPU history (so a fresh page can draw the last hours at once) ─────
+// Two stores: the dense one keeps every ~2 s sample for the short Overview/Spark charts
+// (8 h), the long one keeps a minute-resolution series for a week so the Temps page can
+// draw day and week ranges without storing a week of 2 s samples.
+const GPU_HISTORY_DENSE_WINDOW_MS = 8 * 3600_000;
+const GPU_HISTORY_MAX_WINDOW_MS = 7 * 24 * 3600_000;
 const gpuHistory = new GpuHistory({
   file: process.env.GPU_HISTORY_JSON_PATH || path.join(ROOT, "config", "gpu-history.json"),
+});
+const gpuHistoryLong = new GpuHistory({
+  file: process.env.GPU_HISTORY_LONG_JSON_PATH || path.join(ROOT, "config", "gpu-history-long.json"),
+  maxAgeMs: GPU_HISTORY_MAX_WINDOW_MS,
+  minGapMs: 60_000,
 });
 const GPU_HISTORY_SAMPLE_MS = 2000;
 function sampleGpuHistory() {
@@ -322,7 +336,13 @@ function sampleGpuHistory() {
       const draw = gpu.power?.draw;
       const limit = gpu.power?.limit;
       const powerPct = Number.isFinite(draw) && Number.isFinite(limit) && limit > 0 ? Math.min(100, (draw / limit) * 100) : null;
-      gpuHistory.record(snap.id, Date.now(), gpu.usage, gpu.temperature, powerPct, deviceReadings(gpu.gpus));
+      const devices = deviceReadings(gpu.gpus);
+      const at = Date.now();
+      const usage = gpu.metricAvailability?.usage === false ? null : gpu.usage;
+      const temperature = gpu.metricAvailability?.temperature === false ? null : gpu.temperature;
+      const pct = gpu.metricAvailability?.powerDraw === false || gpu.metricAvailability?.powerLimit === false ? null : powerPct;
+      gpuHistory.record(snap.id, at, usage, temperature, pct, devices);
+      gpuHistoryLong.record(snap.id, at, usage, temperature, pct, devices);
     }
   } catch {
     /* sampling must never break the server */
@@ -331,6 +351,7 @@ function sampleGpuHistory() {
 const gpuHistoryTimer = setInterval(sampleGpuHistory, GPU_HISTORY_SAMPLE_MS);
 gpuHistoryTimer.unref?.();
 gpuHistory.start();
+gpuHistoryLong.start();
 
 /** Record an event; never throws (callers sit in poll loops and routes). */
 function recordEvent(event) {
@@ -744,6 +765,7 @@ app.delete("/api/sparks/:id", (req, res) => {
     launcherManager.removeSpark(req.params.id);
     launcherStatusCache.delete(req.params.id);
     gpuHistory.remove(req.params.id);
+    gpuHistoryLong.remove(req.params.id);
     toolEvalManager.removeSpark(req.params.id);
     vulnHuntManager.removeSpark(req.params.id);
     reaManager.removeSpark(req.params.id);
@@ -776,7 +798,7 @@ app.put("/api/sparks/order", (req, res) => {
 
 // ─── Global settings ──────────────────────────────────────
 app.get("/api/settings", (_req, res) => {
-  res.json(getSettings());
+  res.json({ ...getSettings(), inferenceActivityEnabled: inferenceActivity.enabled });
 });
 
 app.put("/api/settings", (req, res) => {
@@ -791,17 +813,26 @@ app.put("/api/settings", (req, res) => {
       }
       restartBroadcast();
     }
-    res.json(newSettings);
+    res.json({ ...newSettings, inferenceActivityEnabled: inferenceActivity.enabled });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
 });
 
+// Optional gateway summaries; source URLs and labels can only be set on the server.
+app.get("/api/inference/activity", async (_req, res) => {
+  await inferenceActivity.refreshIfDue();
+  res.set("Cache-Control", "no-store").json(inferenceActivity.snapshot());
+});
+
 // Recent GPU utilization / temperature / power % for one Spark (parallel arrays), newest last.
+// Windows up to 8 h come from the dense ~2 s series; longer windows (Temps day/week) come
+// from the minute-resolution long-retention series.
 app.get("/api/sparks/:id/gpu-history", (req, res) => {
   if (!registry.getSpark(req.params.id)) return res.status(404).json({ error: "Spark not found" });
-  const windowMs = Math.min(8 * 3600_000, Math.max(60_000, Number(req.query.windowMs) || 8 * 3600_000));
-  res.json(gpuHistory.get(req.params.id, Date.now() - windowMs));
+  const windowMs = Math.min(GPU_HISTORY_MAX_WINDOW_MS, Math.max(60_000, Number(req.query.windowMs) || 8 * 3600_000));
+  const store = windowMs > GPU_HISTORY_DENSE_WINDOW_MS ? gpuHistoryLong : gpuHistory;
+  res.json(store.get(req.params.id, Date.now() - windowMs));
 });
 
 app.get("/api/sparks/:id/metrics", (req, res) => {
@@ -2162,6 +2193,18 @@ app.post("/api/sparks/:id/shutdown", async (req, res) => {
   }
 });
 
+// GPU clock cap (nvidia-smi -lgc, optionally kept across reboots by a systemd service).
+// Needs root on the unit: the local unit runs as root in the host mount namespace, a
+// remote one uses `sudo -n` as its SSH user. Same auth and limiters as power actions.
+registerGpuClockRoutes(app, {
+  manager: new GpuClockManager(),
+  registry,
+  recordEvent,
+  allowRead: (req) => allowTest(principalKey(req)),
+  allowChange: (req) => allowDestructive(principalKey(req)) && allowGlobalDestructive(clientKey(req)),
+  rejectLimited,
+});
+
 app.post("/api/sparks/:id/wake", async (req, res) => {
   try {
     const spark = registry.getSpark(req.params.id);
@@ -2421,6 +2464,7 @@ async function shutdown(signal) {
   try {
     clearInterval(gpuHistoryTimer);
     gpuHistory.stop();
+    gpuHistoryLong.stop();
   } catch (err) {
     console.error("[sparkDash] failed to flush GPU history:", err.message);
   }

@@ -5,13 +5,13 @@ export interface SparkConfig {
   /**
    * Unit type:
    * - spark: NVIDIA DGX Spark (default) — DGX Spark specs shown in the header.
-   * - host: any Linux box with an NVIDIA GPU (still monitored via nvidia-smi,
-   *   just not a Spark). Real hardware is auto-detected once online.
+   * - host: any Linux box with supported NVIDIA or AMD GPUs, just not a Spark.
+   *   Real hardware is auto-detected once online.
    */
   kind?: "spark" | "host";
   /**
    * Optional OS platform override for SSH-collected units. "linux" (default)
-   * uses /proc + nvidia-smi, "darwin" macOS hosts, "windows" Windows hosts
+   * uses /proc + vendor GPU tooling, "darwin" macOS hosts, "windows" Windows hosts
    * (PowerShell collectors; NVIDIA via nvidia-smi, AMD iGPUs via GPU
    * performance counters).
    */
@@ -198,9 +198,32 @@ export interface GpuThrottle {
   smClockMaxMHz: number | null;
   /** Current SM clock as % of max (0–100). null when clocks unavailable. */
   smClockPct: number | null;
+  /** Max graphics clock locked with `nvidia-smi -lgc` (MHz), from the sparkdash
+   *  gpu-clock-cap marker on the host. null/absent when no lock is recorded. */
+  clockCapMHz?: number | null;
   /** Human-readable active reasons (tooltip). */
   detail: string;
 }
+
+/** GET /api/sparks/:id/gpu-clock: the GPU clock cap (`nvidia-smi -lgc`) and its boot service. */
+export type GpuClockStatus =
+  | { supported: false; reason?: string }
+  | {
+      supported: true;
+      /** GPU maximum graphics clock (MHz). */
+      hwMaxMHz: number | null;
+      /** Cap in effect right now (MHz), null when none is recorded. */
+      capMHz: number | null;
+      /** "root" runs directly, "yes" = passwordless sudo works, "no" = it does not. */
+      sudo: "root" | "yes" | "no";
+      service: {
+        installed: boolean;
+        /** "min,max" the service applies at boot. */
+        clocks: string | null;
+        enabled: string | null;
+        active: string | null;
+      };
+    };
 
 /** One health finding for a Spark (server rules in server/health/HealthEvaluator.js). */
 export interface HealthFinding {
@@ -211,7 +234,18 @@ export interface HealthFinding {
   hint: string;
 }
 
+export interface GpuMetricAvailability {
+  temperature: boolean;
+  usage: boolean;
+  powerDraw: boolean;
+  powerLimit: boolean;
+  vramUsed: boolean;
+  vramTotal: boolean;
+}
+
 export interface GpuMetrics {
+  vendors?: Array<"amd" | "nvidia">;
+  metricAvailability?: GpuMetricAvailability;
   temperature: number;
   usage: number;
   power: {
@@ -243,9 +277,14 @@ export interface GpuMetrics {
   gpus?: GpuDevice[];
 }
 
-/** One physical GPU as reported by nvidia-smi (`index,name,uuid`). */
+/** One physical GPU; `index` is a stable dashboard identity and `physicalIndex` is the vendor's index. */
 export interface GpuDevice {
+  /** Stable dashboard identity; AMD indices use a separate internal range. */
   index: number;
+  /** Physical index reported by the vendor tool. */
+  physicalIndex?: number;
+  vendor?: "amd" | "nvidia" | "apple";
+  metricAvailability?: GpuMetricAvailability;
   name: string | null;
   uuid: string | null;
   temperature: number;
@@ -390,7 +429,8 @@ export interface LlmMetrics {
   contextLength: number | null;
   /** GPU memory utilization for the LLM engine (0–1), e.g. 0.9. Only from vLLM internal info. */
   gpuMemoryUtilization: number | null;
-  slotsActive: number;
+  /** Occupied slots; null when the backend does not report occupancy. */
+  slotsActive: number | null;
   slotsTotal: number;
   generationTps: number;
   prefillTps: number;
@@ -588,6 +628,8 @@ export interface SparkMetrics {
   unifiedMemory: UnifiedMemoryMetrics | null;
   /** Array of LLM metrics, one per configured port. Empty array when no ports. */
   llm: LlmMetrics[];
+  /** Loaded models discovered in private vLLM containers over SSH; no throughput claim. */
+  residentModels?: Array<{ modelId: string; container: string }>;
   /** ComfyUI probe result when monitoring is enabled; null when off or not yet polled. */
   comfy?: ComfyMetrics | null;
   /** Tailnet probe result when monitoring is enabled; null when off or not yet polled. */
@@ -698,7 +740,33 @@ export interface HealthResponse {
   warnings: string[];
 }
 
+export interface InferenceActivity {
+  enabled: boolean;
+  available: boolean;
+  /** Approved non-secret display labels, never API keys. */
+  labels: string[];
+  generatedAt: string | null;
+  error: string | null;
+  active: Array<{
+    principal: string;
+    model: string;
+    count: number;
+    oldestAgeMs: number;
+    newestAgeMs: number;
+  }>;
+  recent: Array<{
+    principal: string;
+    model: string;
+    durationMs: number;
+    status: number | null;
+    observedAt: string;
+  }>;
+  overflowed: boolean;
+}
+
 export interface Settings {
+  /** Read-only server capability; configured through environment variables. */
+  inferenceActivityEnabled?: boolean;
   pollIntervalMs: number;
   defaultLlmPort: number;
   autoHideOffline: boolean;

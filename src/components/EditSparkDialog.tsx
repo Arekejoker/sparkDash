@@ -14,6 +14,7 @@ import { resolveSparkRole } from "../api/sparkRole";
 import { useModalPresence } from "../hooks/useModalPresence";
 import { InfoIcon } from "./ui/icons";
 import { TestResultList } from "./TestResultList";
+import { GpuClockSection } from "./GpuClockSection";
 import { XIcon } from "./ui/icons";
 import "../styles/dialogs.css";
 
@@ -681,6 +682,10 @@ export function EditSparkDialog({
                     </div>
                   )}
                 </>
+              )}
+
+              {sparkId && config.kind !== "host" && config.platform !== "windows" && config.platform !== "darwin" && (
+                <GpuClockSection sparkId={sparkId} />
               )}
             </div>
           )}
