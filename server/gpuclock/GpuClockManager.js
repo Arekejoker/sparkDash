@@ -25,7 +25,15 @@ const CODE_STATUS = {
   "no-gpu": 409,
   "no-systemd": 409,
   range: 400,
+  "bad-output": 502,
+  // The action reached the unit and failed there (nvidia-smi, systemd, the marker write).
+  "lgc-failed": 422,
+  "service-failed": 422,
+  "rgc-failed": 422,
+  "marker-failed": 422,
 };
+/** After a transport failure the outcome on the unit is unknown: refuse a second action for a while. */
+const HOLD_AFTER_TRANSPORT_ERROR_MS = 30_000;
 
 const httpError = (status, message, code) => Object.assign(new Error(message), { status, code });
 
@@ -58,8 +66,9 @@ export function runProgram(spark, program, { timeoutMs = ACTION_TIMEOUT_MS } = {
 
 export class GpuClockManager {
   /** @param {{ run?: typeof runProgram, paths?: object }} [opts] `paths` is a test hook for the program's file locations. */
-  constructor({ run = runProgram, paths = {} } = {}) {
+  constructor({ run = runProgram, paths = {}, holdMs = HOLD_AFTER_TRANSPORT_ERROR_MS } = {}) {
     this._run = run;
+    this._holdMs = holdMs;
     this._paths = paths;
     /** @type {Set<string>} */
     this._busy = new Set();
@@ -70,7 +79,9 @@ export class GpuClockManager {
     try {
       out = await this._run(spark, program, { timeoutMs });
     } catch (err) {
-      throw httpError(502, `Could not reach ${spark.name || spark.id}: ${String(err.message || err).slice(0, 200)}`);
+      const e = httpError(502, `Could not reach ${spark.name || spark.id}: ${String(err.message || err).slice(0, 200)}`);
+      e.holdBusy = true;
+      throw e;
     }
     return parseProgramOutput(out);
   }
@@ -83,10 +94,19 @@ export class GpuClockManager {
   async _exclusive(spark, fn) {
     if (this._busy.has(spark.id)) throw httpError(409, "Another GPU clock action is still running on this unit");
     this._busy.add(spark.id);
+    let hold = false;
     try {
       return await fn();
+    } catch (err) {
+      hold = err?.holdBusy === true;
+      throw err;
     } finally {
-      this._busy.delete(spark.id);
+      // A timed-out or dropped connection can leave the program still running on the unit.
+      if (hold && this._holdMs > 0) {
+        setTimeout(() => this._busy.delete(spark.id), this._holdMs).unref?.();
+      } else {
+        this._busy.delete(spark.id);
+      }
     }
   }
 

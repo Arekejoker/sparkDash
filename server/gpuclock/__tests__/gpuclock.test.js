@@ -42,6 +42,7 @@ esac
     `#!/bin/sh
 echo "systemctl $*" >> ${calls}
 case "$1" in
+  restart) [ -f ${root}/restart_fails ] && exit 1 ;;
   is-enabled) [ -f ${root}/units/${UNIT_NAME} ] && echo enabled || echo disabled ;;
   is-active) [ -f ${root}/units/${UNIT_NAME} ] && echo active || echo inactive ;;
 esac
@@ -58,9 +59,11 @@ exit 0
     systemctl: path.join(bin, "systemctl"),
     sandbox: true,
   };
-  const run = (program) => parseProgramOutput(execFileSync("sh", ["-c", program], { encoding: "utf8" }));
+  const run = (program, { shell = "sh", env } = {}) =>
+    parseProgramOutput(execFileSync(shell, ["-c", program], { encoding: "utf8", env: env ?? process.env }));
   const read = (f) => (fs.existsSync(path.join(root, f)) ? fs.readFileSync(path.join(root, f), "utf8") : null);
-  return { root, paths, run, read, calls: () => read("calls.log") ?? "", cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+  const write = (f, text) => fs.writeFileSync(path.join(root, f), text);
+  return { root, paths, run, read, write, bin, calls: () => read("calls.log") ?? "", cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 
 test("parseCapRequest accepts a normal cap and rejects everything else", () => {
@@ -275,4 +278,142 @@ test("GpuClockManager.status: normal answer, and a unit without nvidia-smi is 'u
   });
   const none = new GpuClockManager({ run: async () => "RESULT=error\nCODE=no-nvidia\nMSG=nvidia-smi was not found on this unit" });
   assert.equal((await none.status(spark)).supported, false);
+});
+
+const OLD_UNIT = `[Unit]
+Description=Limit NVIDIA GPU graphics clock (0,2200 MHz)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/nvidia-smi -lgc 0,2200
+ExecStop=/usr/bin/nvidia-smi -rgc
+
+[Install]
+WantedBy=multi-user.target
+`;
+
+test("status understands a unit installed by the standalone sparkLimiter script", () => {
+  const sb = sandbox();
+  try {
+    sb.write(`units/${UNIT_NAME}`, OLD_UNIT);
+    const status = sb.run(buildStatusProgram(sb.paths));
+    assert.equal(status.SVC_INSTALLED, "1");
+    assert.equal(status.SVC_CLOCKS, "0,2200");
+    assert.equal(status.CAP, "");
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("a refused cap leaves an existing service and its marker exactly as they were", () => {
+  const sb = sandbox({ lgcFails: true });
+  try {
+    sb.write(`units/${UNIT_NAME}`, OLD_UNIT);
+    sb.write(`run/${MARKER_FILE}`, "2200 11111111-2222-3333-4444-555555555555\n");
+    for (const persist of [true, false]) {
+      const res = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist }, sb.paths));
+      assert.equal(res.CODE, "lgc-failed");
+      assert.equal(sb.read(`units/${UNIT_NAME}`), OLD_UNIT);
+      assert.equal(sb.read(`run/${MARKER_FILE}`).trim(), "2200 11111111-2222-3333-4444-555555555555");
+    }
+    assert.doesNotMatch(sb.calls(), /disable|restart/);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("a service that fails to start is rolled back: previous unit restored, cap and marker stay truthful", () => {
+  const sb = sandbox();
+  try {
+    sb.write(`units/${UNIT_NAME}`, OLD_UNIT);
+    sb.write("restart_fails", "1");
+    const res = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+    assert.equal(res.RESULT, "error");
+    assert.equal(res.CODE, "service-failed");
+    assert.match(res.MSG, /until the next reboot/);
+    assert.equal(sb.read(`units/${UNIT_NAME}`), OLD_UNIT, "the previous service is back");
+    assert.equal(sb.read("lock").trim(), "0,1800", "the live cap is still applied");
+    assert.equal(sb.read(`run/${MARKER_FILE}`).trim(), "1800 11111111-2222-3333-4444-555555555555");
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("a first-time service that fails to start is removed again", () => {
+  const sb = sandbox();
+  try {
+    sb.write("restart_fails", "1");
+    const res = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+    assert.equal(res.CODE, "service-failed");
+    assert.equal(sb.read(`units/${UNIT_NAME}`), null);
+    assert.match(sb.calls(), /systemctl disable spark-gpu-clock-limit.service/);
+    assert.equal(sb.read(`run/${MARKER_FILE}`).trim(), "1800 11111111-2222-3333-4444-555555555555");
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("the same programs behave under dash and bash --posix", () => {
+  for (const shell of ["dash", "bash"]) {
+    try {
+      execFileSync(shell, ["-c", "true"]);
+    } catch {
+      continue; // not installed here
+    }
+    const sb = sandbox();
+    try {
+      const opt = { shell, env: process.env };
+      const wrap = (prog) => (shell === "bash" ? `set -o posix\n${prog}` : prog);
+      assert.equal(sb.run(wrap(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths)), opt).RESULT, "ok", shell);
+      assert.equal(sb.run(wrap(buildStatusProgram(sb.paths)), opt).CAP, "1800", shell);
+      assert.equal(sb.run(wrap(buildResetProgram(sb.paths)), opt).RESULT, "ok", shell);
+      assert.equal(sb.read(`units/${UNIT_NAME}`), null, shell);
+    } finally {
+      sb.cleanup();
+    }
+  }
+});
+
+test("as a normal user every privileged step goes through sudo -n (real privilege path, fake sudo)", () => {
+  const sb = sandbox();
+  try {
+    const log = path.join(sb.root, "sudo.log");
+    fs.writeFileSync(path.join(sb.bin, "sudo"), `#!/bin/sh\necho "sudo $*" >> ${log}\n[ "$1" = -n ] || exit 9\nshift\nexec "$@"\n`, { mode: 0o755 });
+    // `install -o root -g root` cannot succeed unprivileged: drop the ownership flags only.
+    fs.writeFileSync(path.join(sb.bin, "install"), `#!/bin/sh\nargs=""\nwhile [ $# -gt 0 ]; do case "$1" in -o|-g) shift 2 ;; *) args="$args $1"; shift ;; esac; done\nexec /usr/bin/install $args\n`, { mode: 0o755 });
+    const paths = { ...sb.paths, sandbox: false, systemctl: "systemctl" };
+    const env = { ...process.env, PATH: `${sb.bin}:${process.env.PATH}` };
+    const res = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, paths), { env });
+    assert.equal(res.RESULT, "ok");
+    const calls = fs.readFileSync(log, "utf8");
+    assert.match(calls, /sudo -n true/);
+    assert.match(calls, /sudo -n .*nvidia-smi -lgc 0,1800/);
+    assert.match(calls, /sudo -n install -m 644 -o root -g root/);
+    assert.match(calls, /sudo -n .*systemctl enable/);
+    assert.match(calls, /sudo -n sh -c mkdir -p/);
+    assert.equal(sb.read(`units/${UNIT_NAME}`).includes("-lgc 0,1800"), true);
+    // Sudo that asks for a password changes nothing.
+    fs.writeFileSync(path.join(sb.bin, "sudo"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    fs.rmSync(path.join(sb.root, "lock"));
+    const denied = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1500, persist: true }, paths), { env });
+    assert.equal(denied.CODE, "no-sudo");
+    assert.equal(sb.read("lock"), null);
+    assert.equal(sb.read(`units/${UNIT_NAME}`).includes("-lgc 0,1800"), true);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("a dropped connection keeps the unit busy for a while, then frees it", async () => {
+  let n = 0;
+  const m = new GpuClockManager({
+    holdMs: 60,
+    run: async () => { n += 1; if (n === 1) throw new Error("timeout"); return "RESULT=ok\nCAP=1800\nPERSIST=0"; },
+  });
+  const spark = { id: "s1", kind: "spark" };
+  await assert.rejects(m.apply(spark, { maxMHz: 1800 }), (e) => e.status === 502);
+  await assert.rejects(m.apply(spark, { maxMHz: 1800 }), (e) => e.status === 409);
+  await new Promise((r) => setTimeout(r, 90));
+  assert.equal((await m.apply(spark, { maxMHz: 1800 })).capMHz, 1800);
 });

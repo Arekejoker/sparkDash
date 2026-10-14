@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchGpuClock, resetGpuClock, setGpuClock } from "../api/client";
 import type { GpuClockStatus } from "../api/types";
 
@@ -23,54 +23,61 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
   const [persist, setPersist] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  /** Only the newest request may write state: a slow answer for an older unit must not win. */
+  const latest = useRef(0);
 
-  const load = useCallback(async () => {
-    try {
-      const s = await fetchGpuClock(sparkId);
-      setStatus(s);
-      setLoadError(null);
-      return s;
-    } catch (err) {
-      setStatus(null);
-      setLoadError(err instanceof Error ? err.message : "Could not read the GPU clock cap");
-      return null;
-    }
-  }, [sparkId]);
+  const syncInputs = (s: GpuClockStatus) => {
+    if (!s.supported) return;
+    const cap = s.capMHz ?? serviceMax(s);
+    setMaxInput(cap != null ? String(cap) : "");
+    setPersist(s.service.installed);
+  };
+
+  const load = useCallback(
+    async (opts: { sync: boolean }) => {
+      const mine = ++latest.current;
+      try {
+        const s = await fetchGpuClock(sparkId);
+        if (mine !== latest.current) return;
+        setStatus(s);
+        setLoadError(null);
+        if (opts.sync) syncInputs(s);
+      } catch (err) {
+        if (mine !== latest.current) return;
+        // Keep what is on screen after a failed refresh; the message says what went wrong.
+        setLoadError(err instanceof Error ? err.message : "Could not read the GPU clock cap");
+      }
+    },
+    [sparkId]
+  );
 
   useEffect(() => {
-    let live = true;
-    void load().then((s) => {
-      if (!live || !s || !s.supported) return;
-      const cap = s.capMHz ?? serviceMax(s);
-      setMaxInput(cap != null ? String(cap) : "");
-      setPersist(s.service.installed);
-    });
+    setStatus(null);
+    setLoadError(null);
+    setMessage(null);
+    setMaxInput("");
+    setPersist(false);
+    void load({ sync: true });
     return () => {
-      live = false;
+      latest.current += 1;
     };
   }, [load]);
 
-  if (!status && !loadError) {
+  if (!status) {
     return (
       <div className="gpu-clock">
-        <label className="field-label">GPU clock cap</label>
-        <p className="field-hint">Reading the unit…</p>
+        <span className="field-label">GPU clock cap</span>
+        <p className={`field-hint${loadError ? " is-warn" : ""}`} role="status">
+          {loadError ?? "Reading the unit…"}
+        </p>
       </div>
     );
   }
-  if (loadError) {
+  if (!status.supported) {
     return (
       <div className="gpu-clock">
-        <label className="field-label">GPU clock cap</label>
-        <p className="field-hint is-warn">{loadError}</p>
-      </div>
-    );
-  }
-  if (!status || !status.supported) {
-    return (
-      <div className="gpu-clock">
-        <label className="field-label">GPU clock cap</label>
-        <p className="field-hint">{status?.reason || "Not available on this unit."}</p>
+        <span className="field-label">GPU clock cap</span>
+        <p className="field-hint">{status.reason || "Not available on this unit."}</p>
       </div>
     );
   }
@@ -83,7 +90,6 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
     maxMHz >= MIN_CAP_MHZ &&
     (hwMax == null || maxMHz <= hwMax);
   const sudoMissing = status.sudo === "no";
-  const hasCap = status.capMHz != null || status.service.installed;
 
   const run = async (action: () => Promise<unknown>, done: string) => {
     setBusy(true);
@@ -95,7 +101,7 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
       setMessage({ ok: false, text: err instanceof Error ? err.message : "The unit refused the change" });
     } finally {
       setBusy(false);
-      await load();
+      await load({ sync: true });
     }
   };
 
@@ -148,7 +154,7 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
         <button type="button" className="btn btn--sm" onClick={apply} disabled={busy || !valid || sudoMissing}>
           {busy ? "Working…" : "Apply"}
         </button>
-        <button type="button" className="btn btn--sm btn--ghost" onClick={remove} disabled={busy || sudoMissing || !hasCap}>
+        <button type="button" className="btn btn--sm btn--ghost" onClick={remove} disabled={busy || sudoMissing}>
           Remove limit
         </button>
       </div>
@@ -163,7 +169,7 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
       </label>
       {sudoMissing ? (
         <p className="field-hint is-warn">
-          The SSH user needs passwordless sudo on this unit (<code>NOPASSWD</code>) to change the clock. Nothing was changed.
+          The user that runs the change needs passwordless sudo on this unit (<code>NOPASSWD: ALL</code>) to change the clock. Nothing was changed.
         </p>
       ) : (
         <p className="field-hint">
@@ -176,7 +182,12 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
           Enter a whole number from {MIN_CAP_MHZ}{hwMax != null ? ` to ${hwMax}` : ""}.
         </p>
       )}
-      {message && <p className={`field-hint ${message.ok ? "is-ok" : "is-warn"}`}>{message.text}</p>}
+      {loadError && <p className="field-hint is-warn" role="status">Could not refresh: {loadError}</p>}
+      {message && (
+        <p className={`field-hint ${message.ok ? "is-ok" : "is-warn"}`} role="status">
+          {message.text}
+        </p>
+      )}
     </div>
   );
 }

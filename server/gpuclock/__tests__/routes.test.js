@@ -78,3 +78,22 @@ test("an unreachable unit is a 502 that does not echo ssh internals beyond a sho
     assert.ok((await res.json()).error.length < 260);
   });
 });
+
+test("a failure on the unit reaches the browser with its own message, not a generic 500", async () => {
+  const cases = [
+    ["lgc-failed", "nvidia-smi refused the clock cap: not supported", 422],
+    ["service-failed", "the service did not start; the cap applies until the next reboot", 422],
+    ["rgc-failed", "nvidia-smi could not reset the clocks", 422],
+    ["marker-failed", "could not record the cap", 422],
+    ["bad-output", "the unit returned an unexpected answer", 502],
+  ];
+  for (const [code, msg, status] of cases) {
+    await withApp({ run: async () => `RESULT=error\nCODE=${code}\nMSG=${msg}` }, async (base) => {
+      const res = await fetch(`${base}/s1/gpu-clock`, json("PUT", { maxMHz: 1800, persist: true }));
+      assert.equal(res.status, status, code);
+      const body = await res.json();
+      assert.equal(body.code, code);
+      if (code !== "bad-output") assert.equal(body.error, msg);
+    });
+  }
+});

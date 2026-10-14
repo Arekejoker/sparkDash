@@ -10,8 +10,9 @@ export function registerGpuClockRoutes(app, { manager, registry, recordEvent, al
       if (!spark) return res.status(404).json({ error: "Spark not found" });
       await fn(spark, req, res);
     } catch (err) {
-      const status = Number.isInteger(err?.status) ? err.status : 500;
-      res.status(status).json({ error: status === 500 ? "GPU clock action failed" : err.message, code: err?.code });
+      // Errors from the manager carry a status and a curated message; anything else stays generic.
+      const known = Number.isInteger(err?.status);
+      res.status(known ? err.status : 500).json({ error: known ? err.message : "GPU clock action failed", code: err?.code });
     }
   };
 

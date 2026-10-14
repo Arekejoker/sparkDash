@@ -128,4 +128,57 @@ describe("GpuClockSection", () => {
     expect(container.textContent).toContain("nvidia-smi was not found");
     expect(buttons(container)).toHaveLength(0);
   });
+
+  it("ignores a slow answer for the previous unit after switching units", async () => {
+    let resolveOld!: (v: GpuClockStatus) => void;
+    vi.mocked(fetchGpuClock).mockImplementation((id: string) =>
+      id === "old"
+        ? new Promise<GpuClockStatus>((r) => (resolveOld = r))
+        : Promise.resolve({ ...base, capMHz: 1500, hwMaxMHz: 2418 })
+    );
+    const { container, root } = render(<GpuClockSection sparkId="old" />);
+    await flush();
+    act(() => root.render(<GpuClockSection sparkId="new" />));
+    await flush();
+    expect((container.querySelector("#gpu-clock-max") as HTMLInputElement).value).toBe("1500");
+    await act(async () => resolveOld({ ...base, capMHz: 2200 }));
+    await flush();
+    expect((container.querySelector("#gpu-clock-max") as HTMLInputElement).value).toBe("1500");
+    expect(container.textContent).toContain("Capped at 1500 MHz");
+  });
+
+  it("keeps the form and the success message when the refresh after a change fails", async () => {
+    const { container } = render(<GpuClockSection sparkId="lab" />);
+    await flush();
+    setInput(container.querySelector("#gpu-clock-max") as HTMLInputElement, "1800");
+    vi.mocked(fetchGpuClock).mockRejectedValue(new Error("Could not reach Lab"));
+    await act(async () => byText(container, "Apply").click());
+    await flush();
+    expect(container.textContent).toContain("Capped at 1800 MHz until the next reboot.");
+    expect(container.textContent).toContain("Could not refresh: Could not reach Lab");
+    expect(container.querySelector("#gpu-clock-max")).not.toBeNull();
+  });
+
+  it("lets you remove a lock that sparkDash did not record", async () => {
+    const { container } = render(<GpuClockSection sparkId="lab" />);
+    await flush();
+    const remove = byText(container, "Remove limit");
+    expect(remove.disabled).toBe(false);
+    await act(async () => remove.click());
+    await flush();
+    expect(resetGpuClock).toHaveBeenCalledWith("lab");
+  });
+
+  it("resets the inputs from the unit after removing the limit", async () => {
+    vi.mocked(fetchGpuClock)
+      .mockResolvedValueOnce({ ...base, capMHz: 2200, service: { installed: true, clocks: "0,2200", enabled: "enabled", active: "active" } })
+      .mockResolvedValue(base);
+    const { container } = render(<GpuClockSection sparkId="lab" />);
+    await flush();
+    expect((container.querySelector("#gpu-clock-max") as HTMLInputElement).value).toBe("2200");
+    await act(async () => byText(container, "Remove limit").click());
+    await flush();
+    expect((container.querySelector("#gpu-clock-max") as HTMLInputElement).value).toBe("");
+    expect((container.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(false);
+  });
 });

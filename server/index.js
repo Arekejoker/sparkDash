@@ -2134,7 +2134,7 @@ registerGpuClockRoutes(app, {
   manager: new GpuClockManager(),
   registry,
   recordEvent,
-  allowRead: (req) => allowTest(principalKey(req)) && allowGlobalDestructive(clientKey(req)),
+  allowRead: (req) => allowTest(principalKey(req)),
   allowChange: (req) => allowDestructive(principalKey(req)) && allowGlobalDestructive(clientKey(req)),
   rejectLimited,
 });
