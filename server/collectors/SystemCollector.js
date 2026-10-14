@@ -159,7 +159,7 @@ const MACMON_CANDIDATES = [
   "$HOME/.cargo/bin/macmon",
 ].filter(Boolean);
 export const MACMON_CMD =
-  `for m in ${MACMON_CANDIDATES.map((p) => (p.startsWith("$HOME") ? `"${p}"` : `'${p}'`)).join(" ")} "$(command -v macmon 2>/dev/null)"; do ` +
+  `for m in ${MACMON_CANDIDATES.map((p) => (p.startsWith("$HOME") ? `"${p}"` : `'${p.replace(/'/g, `'\\''`)}'`)).join(" ")} "$(command -v macmon 2>/dev/null)"; do ` +
   'if [ -n "$m" ] && [ -x "$m" ]; then "$m" pipe -s 1 -i 200; exit 0; fi; done; echo NO_MACMON';
 
 /** Last JSON line of `macmon pipe` output, parsed; null when absent or malformed. */
@@ -2054,17 +2054,37 @@ export class SystemCollector {
   // collectors fall back to defaults (RAM keeps the sysctl/memory_pressure reader).
   _macmonSample(executor = sshExec) {
     const now = Date.now();
-    if (this._macmon && now - this._macmon.at < 1500) return this._macmon.promise;
+    if (this._macmon && now - this._macmon.at < this._macmon.ttl) return this._macmon.promise;
     const promise = executor(this.spark, MACMON_CMD).then((out) => {
       const sample = parseMacmonSample(out);
-      if (!sample) throw new Error("macmon not found on host (install it, or set MACMON_PATH)");
+      if (!sample) {
+        // A Mac without macmon is re-checked once a minute (and logged once), not on every poll.
+        if (/NO_MACMON/.test(String(out ?? ""))) {
+          const err = new Error("macmon not found on host (install it, or set MACMON_PATH)");
+          err.macmonMissing = true;
+          throw err;
+        }
+        throw new Error("macmon returned no sample");
+      }
       return sample;
     });
-    this._macmon = { at: now, promise };
-    promise.catch(() => {
-      if (this._macmon?.promise === promise) this._macmon = null;
+    const entry = { at: now, promise, ttl: 1500 };
+    this._macmon = entry;
+    promise.catch((err) => {
+      if (this._macmon !== entry) return;
+      if (err?.macmonMissing) {
+        entry.ttl = 60_000;
+        console.error(`[SystemCollector] ${this.spark.id}: ${err.message}`);
+      } else {
+        this._macmon = null;
+      }
     });
     return promise;
+  }
+
+  _logMacmonError(kind, err) {
+    if (err?.macmonMissing) return;
+    console.error(`[SystemCollector] macmon ${kind} error for ${this.spark.id}:`, err.message);
   }
 
   async _getRemoteGpuMac() {
@@ -2119,7 +2139,7 @@ export class SystemCollector {
         gpus: [device],
       };
     } catch (err) {
-      console.error(`[SystemCollector] macmon GPU error for ${this.spark.id}:`, err.message);
+      this._logMacmonError("GPU", err);
       return this._defaultGpu();
     }
   }
@@ -2136,7 +2156,7 @@ export class SystemCollector {
         tdp: 0,
       };
     } catch (err) {
-      console.error(`[SystemCollector] macmon CPU error for ${this.spark.id}:`, err.message);
+      this._logMacmonError("CPU", err);
       return this._defaultCpu();
     }
   }

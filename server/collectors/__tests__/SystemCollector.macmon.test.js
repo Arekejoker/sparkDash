@@ -70,3 +70,19 @@ test("DARWIN_UPTIME_CMD parses kern.boottime", () => {
   const fake = DARWIN_UPTIME_CMD.replace("sysctl -n kern.boottime", "echo '{ sec = 1000, usec = 5 } Mon Oct 12 20:07:41 2026'").replace("$(date +%s)", "4600");
   assert.equal(execFileSync("sh", ["-c", fake]).toString().trim(), "3600");
 });
+
+test("a Mac without macmon costs one SSH call a minute, not one per poll", async () => {
+  const c = mac();
+  const calls = withSample(c, "NO_MACMON");
+  const logged = [];
+  const orig = console.error;
+  console.error = (...a) => logged.push(a.join(" "));
+  try {
+    for (let i = 0; i < 4; i++) await c.collectGpu();
+    await c.collectCpu();
+  } finally {
+    console.error = orig;
+  }
+  assert.equal(calls(), 1);
+  assert.equal(logged.filter((l) => /macmon/.test(l)).length, 1);
+});
