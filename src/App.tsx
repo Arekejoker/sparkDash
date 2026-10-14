@@ -595,6 +595,7 @@ function DashboardApp() {
                   temperatureUnit={settings?.temperatureUnit ?? "celsius"}
                   benchShareImage={settings?.benchShareImage ?? false}
                   onEdit={() => setEditId(displayActive.id)}
+                  onNavigate={navigate}
                 />
               ) : !fleetLoaded || staleSpark ? null : (
                 <div className="panel mx-auto mt-16 max-w-md p-8 text-center">
