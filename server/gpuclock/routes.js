@@ -3,6 +3,21 @@
  * Host/Origin middleware, so a token (when SPARKDASH_TOKEN is set) is required
  * exactly as for power actions. Changing a cap uses the destructive limiter.
  */
+const LOOPBACK = /^(::1|127\.\d+\.\d+\.\d+|::ffff:127\.\d+\.\d+\.\d+)$/;
+
+/**
+ * A sudo password may only be typed over https or from the machine itself: on a plain-http
+ * LAN page it would cross the network in the clear. (A proxy's X-Forwarded-Proto is the
+ * client's own claim; this guards against mistakes, not against the person typing.)
+ */
+export function isSecureRequest(req) {
+  return (
+    req.secure === true ||
+    String(req.headers?.["x-forwarded-proto"] || "").split(",")[0].trim() === "https" ||
+    LOOPBACK.test(String(req.socket?.remoteAddress || ""))
+  );
+}
+
 export function registerGpuClockRoutes(app, { manager, registry, recordEvent, allowRead, allowChange, rejectLimited }) {
   const handle = (fn) => async (req, res) => {
     try {
@@ -33,10 +48,20 @@ export function registerGpuClockRoutes(app, { manager, registry, recordEvent, al
     })
   );
 
+  const refuseInsecurePassword = (req, res) => {
+    if (!req.body?.sudoPassword || isSecureRequest(req)) return false;
+    res.status(400).json({
+      error: "Open the dashboard over https or from the Spark itself to type a sudo password here, or use the command to run on the Spark.",
+      code: "insecure-transport",
+    });
+    return true;
+  };
+
   app.put(
     "/api/sparks/:id/gpu-clock",
     handle(async (spark, req, res) => {
       if (!allowChange(req)) return rejectLimited(res, "Too many GPU clock changes, try again in a minute");
+      if (refuseInsecurePassword(req, res)) return;
       const out = await manager.apply(spark, req.body);
       recordEvent({
         type: "gpu.clock.set",
@@ -52,7 +77,8 @@ export function registerGpuClockRoutes(app, { manager, registry, recordEvent, al
     "/api/sparks/:id/gpu-clock",
     handle(async (spark, req, res) => {
       if (!allowChange(req)) return rejectLimited(res, "Too many GPU clock changes, try again in a minute");
-      await manager.reset(spark);
+      if (refuseInsecurePassword(req, res)) return;
+      await manager.reset(spark, req.body);
       recordEvent({ type: "gpu.clock.reset", severity: "info", sparkId: spark.id, message: "GPU clock cap removed" });
       res.json({ success: true });
     })

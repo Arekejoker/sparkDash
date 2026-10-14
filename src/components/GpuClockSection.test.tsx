@@ -94,27 +94,82 @@ describe("GpuClockSection", () => {
     expect(setGpuClock).not.toHaveBeenCalled();
   });
 
-  it("without sudo the buttons stay off, and you are pointed at running it on the Spark yourself", async () => {
+  it("without passwordless sudo it asks for the sudo password, sends it once, and clears it", async () => {
     vi.mocked(fetchGpuClock).mockResolvedValue({ ...base, sudo: "no" });
-    vi.mocked(fetchGpuClockCommand).mockResolvedValue({ command: "# sparkDash: run this on the Spark itself.\nMAX=1800" });
     const { container } = render(<GpuClockSection sparkId="lab" />);
     await flush();
-    expect(container.textContent).toContain("cannot use sudo");
+    const pw = container.querySelector("#gpu-clock-sudo-pw") as HTMLInputElement;
+    expect(pw).not.toBeNull();
+    expect(pw.type).toBe("password");
+    expect(container.textContent).toContain("never stored or logged");
+    setInput(container.querySelector("#gpu-clock-max") as HTMLInputElement, "1800");
+    // A valid cap alone is not enough: the password is required.
     expect(byText(container, "Apply").disabled).toBe(true);
     expect(byText(container, "Remove limit").disabled).toBe(true);
-    const details = container.querySelector("details") as HTMLDetailsElement;
-    expect(details.open).toBe(true);
-    // The inputs still work: they feed the command.
-    const input = container.querySelector("#gpu-clock-max") as HTMLInputElement;
-    expect(input.disabled).toBe(false);
-    expect(byText(container, "Show command: apply").disabled).toBe(true);
-    setInput(input, "1800");
-    await act(async () => byText(container, "Show command: apply").click());
+    setInput(pw, "s3cret pw");
+    expect(byText(container, "Apply").disabled).toBe(false);
+    await act(async () => byText(container, "Apply").click());
     await flush();
-    expect(fetchGpuClockCommand).toHaveBeenCalledWith("lab", { action: "apply", maxMHz: 1800, persist: false });
-    const box = container.querySelector("textarea") as HTMLTextAreaElement;
-    expect(box.readOnly).toBe(true);
-    expect(box.value).toContain("run this on the Spark itself");
+    expect(setGpuClock).toHaveBeenCalledWith("lab", { maxMHz: 1800, persist: false, sudoPassword: "s3cret pw" });
+    expect((container.querySelector("#gpu-clock-sudo-pw") as HTMLInputElement).value).toBe("");
+    expect(container.textContent).not.toContain("s3cret pw");
+
+    setInput(container.querySelector("#gpu-clock-sudo-pw") as HTMLInputElement, "again");
+    await act(async () => byText(container, "Remove limit").click());
+    await flush();
+    expect(resetGpuClock).toHaveBeenCalledWith("lab", "again");
+    expect((container.querySelector("#gpu-clock-sudo-pw") as HTMLInputElement).value).toBe("");
+  });
+
+  it("a wrong password shows the server's message and is cleared so it is retyped", async () => {
+    vi.mocked(fetchGpuClock).mockResolvedValue({ ...base, sudo: "no" });
+    vi.mocked(setGpuClock).mockRejectedValue(new Error("the sudo password was not accepted"));
+    const { container } = render(<GpuClockSection sparkId="lab" />);
+    await flush();
+    setInput(container.querySelector("#gpu-clock-max") as HTMLInputElement, "1800");
+    setInput(container.querySelector("#gpu-clock-sudo-pw") as HTMLInputElement, "wrong");
+    await act(async () => byText(container, "Apply").click());
+    await flush();
+    expect(container.textContent).toContain("the sudo password was not accepted");
+    expect((container.querySelector("#gpu-clock-sudo-pw") as HTMLInputElement).value).toBe("");
+  });
+
+  it("with passwordless sudo no password is asked for or sent", async () => {
+    const { container } = render(<GpuClockSection sparkId="lab" />);
+    await flush();
+    expect(container.querySelector("#gpu-clock-sudo-pw")).toBeNull();
+    setInput(container.querySelector("#gpu-clock-max") as HTMLInputElement, "1800");
+    await act(async () => byText(container, "Apply").click());
+    await flush();
+    expect(setGpuClock).toHaveBeenCalledWith("lab", { maxMHz: 1800, persist: false });
+  });
+
+  it("on a page that is not https/localhost no password is typed; the paste-in command is offered instead", async () => {
+    vi.stubGlobal("isSecureContext", false);
+    Object.defineProperty(window, "isSecureContext", { value: false, configurable: true });
+    try {
+      vi.mocked(fetchGpuClock).mockResolvedValue({ ...base, sudo: "no" });
+      vi.mocked(fetchGpuClockCommand).mockResolvedValue({ command: "# sparkDash: run this on the Spark itself.\nMAX=1800" });
+      const { container } = render(<GpuClockSection sparkId="lab" />);
+      await flush();
+      expect(container.querySelector("#gpu-clock-sudo-pw")).toBeNull();
+      expect(container.textContent).toContain("not on https");
+      expect(byText(container, "Apply").disabled).toBe(true);
+      expect(byText(container, "Remove limit").disabled).toBe(true);
+      expect((container.querySelector("details") as HTMLDetailsElement).open).toBe(true);
+      const input = container.querySelector("#gpu-clock-max") as HTMLInputElement;
+      expect(input.disabled).toBe(false);
+      expect(byText(container, "Show command: apply").disabled).toBe(true);
+      setInput(input, "1800");
+      await act(async () => byText(container, "Show command: apply").click());
+      await flush();
+      expect(fetchGpuClockCommand).toHaveBeenCalledWith("lab", { action: "apply", maxMHz: 1800, persist: false });
+      const box = container.querySelector("textarea") as HTMLTextAreaElement;
+      expect(box.readOnly).toBe(true);
+      expect(box.value).toContain("run this on the Spark itself");
+    } finally {
+      Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+    }
   });
 
   it("builds the remove command, copies it, and shows an error when it cannot be built", async () => {
@@ -154,7 +209,7 @@ describe("GpuClockSection", () => {
     await flush();
     await act(async () => byText(container, "Remove limit").click());
     await flush();
-    expect(resetGpuClock).toHaveBeenCalledWith("lab");
+    expect(resetGpuClock).toHaveBeenCalledWith("lab", undefined);
   });
 
   it("explains a unit without nvidia-smi instead of showing controls", async () => {
@@ -202,7 +257,7 @@ describe("GpuClockSection", () => {
     expect(remove.disabled).toBe(false);
     await act(async () => remove.click());
     await flush();
-    expect(resetGpuClock).toHaveBeenCalledWith("lab");
+    expect(resetGpuClock).toHaveBeenCalledWith("lab", undefined);
   });
 
   it("resets the inputs from the unit after removing the limit", async () => {

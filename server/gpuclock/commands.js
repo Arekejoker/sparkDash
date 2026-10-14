@@ -38,6 +38,9 @@ const DEFAULT_PATHS = Object.freeze({
   // true = the script is run by a person in a terminal on the unit: plain `sudo` (asks for the
   // password), readable output, non-zero exit on failure.
   manual: false,
+  // true = a sudo password arrives in $SPARKDASH_SUDO_PW (set by the runner from stdin) and
+  // every privileged step pipes it to `sudo -S`; it is never put in an argument list.
+  password: false,
   // Test sandbox only: run unprivileged against fake binaries and a temp tree.
   sandbox: false,
 });
@@ -53,6 +56,21 @@ function resolvePaths(overrides = {}) {
     }
   }
   return p;
+}
+
+/**
+ * A sudo password typed in the dashboard. It is only ever sent on stdin. Returns the
+ * string, or null when none was given; throws 400 for anything that is not a plain line.
+ * @param {unknown} v
+ * @returns {string | null}
+ */
+export function parseSudoPassword(v) {
+  if (v === undefined || v === null || v === "") return null;
+  // eslint-disable-next-line no-control-regex
+  if (typeof v !== "string" || v.length > 256 || /[\r\n\u0000]/.test(v)) {
+    throw Object.assign(new Error("sudoPassword must be a single line of at most 256 characters"), { status: 400 });
+  }
+  return v;
 }
 
 /**
@@ -103,12 +121,28 @@ export function buildUnit({ minMHz, maxMHz, nvsmi = "/usr/bin/nvidia-smi", runDi
   ].join("\n");
 }
 
+/** The sudo gate: with a typed password a refusal means a wrong password, otherwise missing NOPASSWD. */
+function needSudoLine(paths) {
+  return paths.password
+    ? 'need_sudo || fail bad-password "the sudo password was not accepted"'
+    : 'need_sudo || fail no-sudo "passwordless sudo (NOPASSWD: ALL) is required for the user that runs the change"';
+}
+
 function header(paths) {
   const nv = paths.nvsmi.map((c) => `"${c}"`).join(" ");
   return [
     "set -u",
     'SUDO=""',
-    paths.sandbox ? ":" : `[ "$(id -u)" = 0 ] || SUDO="${paths.manual ? "sudo" : "sudo -n"}"`,
+    paths.sandbox ? ":" : `[ "$(id -u)" = 0 ] || SUDO="${paths.password ? "spw_sudo" : paths.manual ? "sudo" : "sudo -n"}"`,
+    // Read the password into a plain shell variable and drop it from the environment, so
+    // nothing this script starts inherits it.
+    ...(paths.password
+      ? [
+          "PW=${SPARKDASH_SUDO_PW-}",
+          "unset SPARKDASH_SUDO_PW",
+          "spw_sudo() { printf '%s\\n' \"$PW\" | sudo -S -p '' \"$@\"; }",
+        ]
+      : []),
     `SYSTEMCTL=${paths.systemctl}`,
     `OWNER="${paths.sandbox ? "" : "-o root -g root"}"`,
     `UNIT=${paths.unitDir}/${UNIT_NAME}`,
@@ -123,7 +157,9 @@ function header(paths) {
     'digits() { tr -dc 0-9; }',
     'hwmax() { "$NV" --query-gpu=clocks.max.gr --format=csv,noheader,nounits 2>/dev/null | head -n 1 | digits; }',
     'bootid() { tr -dc "0-9a-fA-F-" < "$BOOTID_FILE" 2>/dev/null | head -c 64; }',
-    paths.manual
+    paths.password
+      ? "need_sudo() { [ -z \"$SUDO\" ] && return 0; command -v sudo >/dev/null 2>&1 && printf '%s\\n' \"$PW\" | sudo -k -S -p '' true >/dev/null 2>&1; }"
+      : paths.manual
       ? 'need_sudo() { [ -z "$SUDO" ] && return 0; command -v sudo >/dev/null 2>&1 && sudo -v; }'
       : 'need_sudo() { [ -z "$SUDO" ] && return 0; command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; }',
     // Removes a previous service (a stale one would re-apply the old cap at boot).
@@ -177,7 +213,7 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     "HW=$(hwmax)",
     '[ -n "$HW" ] || fail no-gpu "could not read the GPU maximum clock"',
     '[ "$MAX" -le "$HW" ] || fail range "the cap is above this GPU\'s maximum clock ($HW MHz)"',
-    'need_sudo || fail no-sudo "passwordless sudo (NOPASSWD: ALL) is required for the user that runs the change"',
+    needSudoLine(paths),
     `if [ "$PERSIST" = 1 ] && [ ! -d ${paths.systemdRunDir} ]; then fail no-systemd "systemd is not running on this unit"; fi`,
     // Order matters: nothing existing is touched until the new cap has been accepted by nvidia-smi.
     'lgc() { $SUDO "$NV" -lgc "$MIN,$MAX"; }',
@@ -233,7 +269,7 @@ export function buildResetProgram(overrides = {}) {
   return [
     ...header(paths),
     '[ -n "$NV" ] || fail no-nvidia "nvidia-smi was not found on this unit"',
-    'need_sudo || fail no-sudo "passwordless sudo (NOPASSWD: ALL) is required for the user that runs the change"',
+    needSudoLine(paths),
     'drop_service || fail service-failed "could not remove the existing service"',
     '$SUDO "$NV" -rgc >/dev/null 2>&1 || fail rgc-failed "nvidia-smi could not reset the clocks"',
     '$SUDO rm -f "$MARKER" || fail marker-failed "could not clear the recorded cap"',

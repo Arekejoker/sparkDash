@@ -27,6 +27,8 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
   const [manual, setManual] = useState<{ title: string; command: string } | null>(null);
   const [manualError, setManualError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  /** Typed sudo password: kept in this component's state only, sent with one request, then cleared. */
+  const [sudoPw, setSudoPw] = useState("");
   /** Only the newest request may write state: a slow answer for an older unit must not win. */
   const latest = useRef(0);
 
@@ -63,6 +65,7 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
     setPersist(false);
     setManual(null);
     setManualError(null);
+    setSudoPw("");
     void load({ sync: true });
     return () => {
       latest.current += 1;
@@ -96,6 +99,11 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
     maxMHz >= MIN_CAP_MHZ &&
     (hwMax == null || maxMHz <= hwMax);
   const sudoMissing = status.sudo === "no";
+  /** A password typed here crosses the network: only over https or from the machine itself. */
+  const secure = typeof window === "undefined" || window.isSecureContext !== false;
+  const needPw = sudoMissing && secure;
+  const pwOk = !needPw || sudoPw.length > 0;
+  const pwArg = needPw ? sudoPw : undefined;
 
   const run = async (action: () => Promise<unknown>, done: string) => {
     setBusy(true);
@@ -107,6 +115,7 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
       setMessage({ ok: false, text: err instanceof Error ? err.message : "The unit refused the change" });
     } finally {
       setBusy(false);
+      setSudoPw("");
       await load({ sync: true });
     }
   };
@@ -114,14 +123,14 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
   const apply = () => {
     if (persist && !confirm("Install a system service on this unit that re-applies the cap at every boot? It runs as root through sudo.")) return;
     void run(
-      () => setGpuClock(sparkId, { maxMHz, persist }),
+      () => setGpuClock(sparkId, { maxMHz, persist, ...(pwArg ? { sudoPassword: pwArg } : {}) }),
       persist ? `Capped at ${maxMHz} MHz and kept after reboot.` : `Capped at ${maxMHz} MHz until the next reboot.`
     );
   };
 
   const remove = () => {
     if (!confirm("Remove the GPU clock cap and its boot service from this unit?")) return;
-    void run(() => resetGpuClock(sparkId), "Cap removed.");
+    void run(() => resetGpuClock(sparkId, pwArg), "Cap removed.");
   };
 
   const showCommand = async (kind: "apply" | "reset") => {
@@ -184,10 +193,10 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
           disabled={busy}
         />
         <span className="gpu-clock__unit">MHz max</span>
-        <button type="button" className="btn btn--sm" onClick={apply} disabled={busy || !valid || sudoMissing}>
+        <button type="button" className="btn btn--sm" onClick={apply} disabled={busy || !valid || !pwOk || (sudoMissing && !secure)}>
           {busy ? "Working…" : "Apply"}
         </button>
-        <button type="button" className="btn btn--sm btn--ghost" onClick={remove} disabled={busy || sudoMissing}>
+        <button type="button" className="btn btn--sm btn--ghost" onClick={remove} disabled={busy || !pwOk || (sudoMissing && !secure)}>
           Remove limit
         </button>
       </div>
@@ -200,11 +209,33 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
         />
         Keep after reboot (installs a system service)
       </label>
-      {sudoMissing ? (
+      {needPw && (
+        <div>
+          <label className="field-label" htmlFor="gpu-clock-sudo-pw">
+            sudo password for this unit
+          </label>
+          <input
+            id="gpu-clock-sudo-pw"
+            type="password"
+            autoComplete="off"
+            value={sudoPw}
+            onChange={(e) => setSudoPw(e.target.value)}
+            disabled={busy}
+            placeholder="used for this change only"
+          />
+          <p className="field-hint">
+            This unit has no passwordless sudo. The password is sent once, over this connection, to run the change, then
+            discarded: it is never stored or logged.
+          </p>
+        </div>
+      )}
+      {sudoMissing && !secure && (
         <p className="field-hint is-warn">
-          The dashboard cannot use sudo on this unit (it would need <code>NOPASSWD: ALL</code>), so it will not change anything. Run the change on the Spark yourself below: sudo asks for your password there.
+          This page is not on https, so a sudo password is not typed here (it would cross the network in the clear). Open the
+          dashboard over https or from the Spark itself, or run the change on the Spark with the command below.
         </p>
-      ) : (
+      )}
+      {!sudoMissing && (
         <p className="field-hint">
           Runs <code>nvidia-smi -lgc 0,MAX</code>{status.sudo === "root" ? " as root on this machine" : " through sudo"}, using the
           saved connection settings. Applies at once; it is not part of Save.
@@ -215,7 +246,7 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
           Enter a whole number from {MIN_CAP_MHZ}{hwMax != null ? ` to ${hwMax}` : ""}.
         </p>
       )}
-      <details className="gpu-clock__manual" open={sudoMissing || manual != null}>
+      <details className="gpu-clock__manual" open={(sudoMissing && !secure) || manual != null}>
         <summary>Run it on the Spark yourself</summary>
         <p className="field-hint">
           Paste the command into a terminal on the Spark. It uses plain <code>sudo</code>, so it asks for your password

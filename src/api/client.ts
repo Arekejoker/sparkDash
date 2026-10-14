@@ -608,7 +608,7 @@ export function fetchGpuClockCommand(
 /** Cap the GPU graphics clock now; `persist` also installs the boot service. */
 export function setGpuClock(
   id: string,
-  body: { maxMHz: number; minMHz?: number; persist: boolean }
+  body: { maxMHz: number; minMHz?: number; persist: boolean; sudoPassword?: string }
 ): Promise<{ success: boolean; capMHz: number; persist: boolean }> {
   return apiFetch(`/api/sparks/${encodeURIComponent(id)}/gpu-clock`, {
     method: "PUT",
@@ -617,8 +617,11 @@ export function setGpuClock(
 }
 
 /** Remove the cap and the boot service. */
-export function resetGpuClock(id: string): Promise<{ success: boolean }> {
-  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/gpu-clock`, { method: "DELETE" });
+export function resetGpuClock(id: string, sudoPassword?: string): Promise<{ success: boolean }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/gpu-clock`, {
+    method: "DELETE",
+    ...(sudoPassword ? { body: JSON.stringify({ sudoPassword }) } : {}),
+  });
 }
 
 // ─── Hermes update preview ───────────────────────────────

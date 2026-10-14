@@ -1,13 +1,15 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
 import express from "express";
-import { registerGpuClockRoutes } from "../routes.js";
+import { registerGpuClockRoutes, isSecureRequest } from "../routes.js";
 import { GpuClockManager } from "../GpuClockManager.js";
 
-async function withApp({ run, allow = () => true, sparks }, fn) {
+async function withApp({ run, allow = () => true, sparks, remoteAddr }, fn) {
   const events = [];
   const app = express();
   app.use(express.json());
+  // Test hook: pretend the browser connected from another machine.
+  if (remoteAddr) app.use((req, _res, next) => { Object.defineProperty(req.socket, "remoteAddress", { value: remoteAddr, configurable: true }); next(); });
   const known = sparks ?? { s1: { id: "s1", name: "S1", kind: "spark" }, h1: { id: "h1", name: "H1", kind: "host" } };
   registerGpuClockRoutes(app, {
     manager: new GpuClockManager({ run }),
@@ -111,5 +113,44 @@ test("GET /command returns a paste-able command without contacting the unit, and
   });
   await withApp({ run: async () => "", allow: () => false }, async (base) => {
     assert.equal((await fetch(`${base}/s1/gpu-clock/command?action=reset`)).status, 429);
+  });
+});
+
+test("isSecureRequest: https, a proxy's https header, or the machine itself", () => {
+  const req = (o) => ({ headers: {}, socket: { remoteAddress: "192.168.1.9" }, ...o });
+  assert.equal(isSecureRequest(req({})), false);
+  assert.equal(isSecureRequest(req({ secure: true })), true);
+  assert.equal(isSecureRequest(req({ headers: { "x-forwarded-proto": "https" } })), true);
+  assert.equal(isSecureRequest(req({ headers: { "x-forwarded-proto": "http" } })), false);
+  for (const a of ["127.0.0.1", "::1", "::ffff:127.0.0.1", "127.3.4.5"]) assert.equal(isSecureRequest(req({ socket: { remoteAddress: a } })), true, a);
+  for (const a of ["10.0.0.5", "::ffff:10.0.0.5", "128.0.0.1", ""]) assert.equal(isSecureRequest(req({ socket: { remoteAddress: a } })), false, a);
+});
+
+test("a sudo password over plain http from another machine is refused before it reaches the unit", async () => {
+  let ran = 0;
+  await withApp({ run: async () => { ran += 1; return "RESULT=ok\nCAP=1800\nPERSIST=0"; }, remoteAddr: "192.168.1.9" }, async (base) => {
+    const put = await fetch(`${base}/s1/gpu-clock`, json("PUT", { maxMHz: 1800, sudoPassword: "pw" }));
+    assert.equal(put.status, 400);
+    assert.equal((await put.json()).code, "insecure-transport");
+    const del = await fetch(`${base}/s1/gpu-clock`, json("DELETE", { sudoPassword: "pw" }));
+    assert.equal(del.status, 400);
+    assert.equal(ran, 0);
+    // The same call without a password still works from there (it only needs the dashboard's own auth).
+    assert.equal((await fetch(`${base}/s1/gpu-clock`, json("PUT", { maxMHz: 1800 }))).status, 200);
+    // And with an https proxy header the password is accepted.
+    const viaProxy = await fetch(`${base}/s1/gpu-clock`, { ...json("PUT", { maxMHz: 1800, sudoPassword: "pw" }), headers: { "Content-Type": "application/json", "X-Forwarded-Proto": "https" } });
+    assert.equal(viaProxy.status, 200);
+  });
+});
+
+test("the password is never echoed in a response or recorded as an event", async () => {
+  await withApp({ run: async () => "RESULT=ok\nCAP=1800\nPERSIST=0" }, async (base, events) => {
+    const res = await fetch(`${base}/s1/gpu-clock`, json("PUT", { maxMHz: 1800, sudoPassword: "very-secret-pw" }));
+    assert.equal(res.status, 200);
+    assert.doesNotMatch(await res.text(), /very-secret-pw/);
+    assert.doesNotMatch(JSON.stringify(events), /very-secret-pw/);
+    const bad = await fetch(`${base}/s1/gpu-clock`, json("PUT", { maxMHz: 1800, sudoPassword: "a\nb" }));
+    assert.equal(bad.status, 400);
+    assert.doesNotMatch(await bad.text(), /a\\nb/);
   });
 });
