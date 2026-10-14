@@ -39,6 +39,8 @@ const CODE_STATUS = {
 const HOLD_AFTER_TRANSPORT_ERROR_MS = 30_000;
 const PASSWORD_ATTEMPTS = 3;
 const PASSWORD_LOCK_MS = 5 * 60_000;
+/** Across all units, so a second registry entry for the same machine does not reset the guess budget. */
+const PASSWORD_ATTEMPTS_GLOBAL = 9;
 
 const httpError = (status, message, code) => Object.assign(new Error(message), { status, code });
 
@@ -114,24 +116,40 @@ export class GpuClockManager {
     return parseProgramOutput(out);
   }
 
+  /** What a password is a guess against: the account on the machine, not the registry entry. */
+  _pwKey(spark) {
+    if (spark.isLocal) return "local";
+    const ssh = spark.ssh || {};
+    return `${ssh.user || ""}@${ssh.host || spark.lanIp || spark.id}:${ssh.port || 22}`.toLowerCase();
+  }
+
   /** Refuse further password attempts for a while after repeated wrong ones. */
   _checkPasswordLock(spark) {
-    const f = this._pwFails.get(spark.id);
-    if (f && f.until > this._now()) {
-      const secs = Math.ceil((f.until - this._now()) / 1000);
-      throw httpError(429, `Too many wrong sudo passwords for this unit. Try again in ${secs} s.`, "password-locked");
+    const now = this._now();
+    const f = [this._pwFails.get(this._pwKey(spark)), this._pwFails.get("*")]
+      .filter((x) => x && x.until > now)
+      .sort((x, y) => y.until - x.until)[0];
+    if (f) {
+      const secs = Math.ceil((f.until - now) / 1000);
+      throw httpError(429, `Too many wrong sudo passwords. Try again in ${secs} s.`, "password-locked");
     }
   }
 
-  _notePasswordResult(spark, wrong) {
-    if (!wrong) return void this._pwFails.delete(spark.id);
-    const f = this._pwFails.get(spark.id) ?? { n: 0, until: 0 };
+  _bump(key, limit) {
+    const f = this._pwFails.get(key) ?? { n: 0, until: 0 };
     f.n += 1;
-    if (f.n >= PASSWORD_ATTEMPTS) {
+    if (f.n >= limit) {
       f.until = this._now() + PASSWORD_LOCK_MS;
       f.n = 0;
     }
-    this._pwFails.set(spark.id, f);
+    this._pwFails.set(key, f);
+  }
+
+  _notePasswordResult(spark, wrong) {
+    const key = this._pwKey(spark);
+    if (!wrong) return void this._pwFails.delete(key);
+    this._bump(key, PASSWORD_ATTEMPTS);
+    this._bump("*", PASSWORD_ATTEMPTS_GLOBAL);
   }
 
   _fail(res) {

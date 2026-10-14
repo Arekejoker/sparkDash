@@ -31,6 +31,8 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
   const [sudoPw, setSudoPw] = useState("");
   /** Only the newest request may write state: a slow answer for an older unit must not win. */
   const latest = useRef(0);
+  const sparkRef = useRef(sparkId);
+  sparkRef.current = sparkId;
 
   const syncInputs = (s: GpuClockStatus) => {
     if (!s.supported) return;
@@ -66,6 +68,7 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
     setManual(null);
     setManualError(null);
     setSudoPw("");
+    setBusy(false);
     void load({ sync: true });
     return () => {
       latest.current += 1;
@@ -100,7 +103,8 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
     (hwMax == null || maxMHz <= hwMax);
   const sudoMissing = status.sudo === "no";
   /** A password typed here crosses the network: only over https or from the machine itself. */
-  const secure = typeof window === "undefined" || window.isSecureContext !== false;
+  const secure =
+    (typeof window === "undefined" || window.isSecureContext !== false) && status.passwordAllowed !== false;
   const needPw = sudoMissing && secure;
   const pwOk = !needPw || sudoPw.length > 0;
   const pwArg = needPw ? sudoPw : undefined;
@@ -114,9 +118,12 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
     } catch (err) {
       setMessage({ ok: false, text: err instanceof Error ? err.message : "The unit refused the change" });
     } finally {
-      setBusy(false);
-      setSudoPw("");
-      await load({ sync: true });
+      // A slow answer for the unit you just left must not wipe what you type for this one.
+      if (sparkRef.current === sparkId) {
+        setBusy(false);
+        setSudoPw("");
+        await load({ sync: true });
+      }
     }
   };
 
@@ -217,7 +224,9 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
           <input
             id="gpu-clock-sudo-pw"
             type="password"
-            autoComplete="off"
+            autoComplete="new-password"
+            data-1p-ignore
+            data-lpignore="true"
             value={sudoPw}
             onChange={(e) => setSudoPw(e.target.value)}
             disabled={busy}
@@ -231,8 +240,9 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
       )}
       {sudoMissing && !secure && (
         <p className="field-hint is-warn">
-          This page is not on https, so a sudo password is not typed here (it would cross the network in the clear). Open the
-          dashboard over https or from the Spark itself, or run the change on the Spark with the command below.
+          This connection is not on https or the machine itself, so a sudo password is not typed here (it would cross the
+          network in the clear). Open the dashboard over https or from the Spark itself, or run the change on the Spark with
+          the command below.
         </p>
       )}
       {!sudoMissing && (

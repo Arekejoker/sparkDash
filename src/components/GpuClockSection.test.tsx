@@ -134,6 +134,15 @@ describe("GpuClockSection", () => {
     expect((container.querySelector("#gpu-clock-sudo-pw") as HTMLInputElement).value).toBe("");
   });
 
+  it("does not offer a password field when the server says it would refuse one from here", async () => {
+    vi.mocked(fetchGpuClock).mockResolvedValue({ ...base, sudo: "no", passwordAllowed: false });
+    const { container } = render(<GpuClockSection sparkId="lab" />);
+    await flush();
+    expect(container.querySelector("#gpu-clock-sudo-pw")).toBeNull();
+    expect(byText(container, "Apply").disabled).toBe(true);
+    expect(container.textContent).toContain("not on https");
+  });
+
   it("with passwordless sudo no password is asked for or sent", async () => {
     const { container } = render(<GpuClockSection sparkId="lab" />);
     await flush();

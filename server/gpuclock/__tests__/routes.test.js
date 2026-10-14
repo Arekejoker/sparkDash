@@ -122,6 +122,12 @@ test("isSecureRequest: https, a proxy's https header, or the machine itself", ()
   assert.equal(isSecureRequest(req({ secure: true })), true);
   assert.equal(isSecureRequest(req({ headers: { "x-forwarded-proto": "https" } })), true);
   assert.equal(isSecureRequest(req({ headers: { "x-forwarded-proto": "http" } })), false);
+  assert.equal(isSecureRequest(req({ headers: { "x-forwarded-proto": "HTTPS" } })), true, "case-insensitive");
+  // A same-host reverse proxy on plain http makes every client look local, but it says so.
+  for (const h of ["x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded"]) {
+    assert.equal(isSecureRequest(req({ headers: { [h]: "192.168.1.9" }, socket: { remoteAddress: "127.0.0.1" } })), false, h);
+  }
+  assert.equal(isSecureRequest(req({ headers: { "x-forwarded-for": "1.2.3.4", "x-forwarded-proto": "https" }, socket: { remoteAddress: "127.0.0.1" } })), true);
   for (const a of ["127.0.0.1", "::1", "::ffff:127.0.0.1", "127.3.4.5"]) assert.equal(isSecureRequest(req({ socket: { remoteAddress: a } })), true, a);
   for (const a of ["10.0.0.5", "::ffff:10.0.0.5", "128.0.0.1", ""]) assert.equal(isSecureRequest(req({ socket: { remoteAddress: a } })), false, a);
 });
@@ -152,5 +158,15 @@ test("the password is never echoed in a response or recorded as an event", async
     const bad = await fetch(`${base}/s1/gpu-clock`, json("PUT", { maxMHz: 1800, sudoPassword: "a\nb" }));
     assert.equal(bad.status, 400);
     assert.doesNotMatch(await bad.text(), /a\\nb/);
+  });
+});
+
+test("the status tells the page whether a typed password would be accepted from this connection", async () => {
+  const run = async () => "RESULT=ok\nHWMAX=3003\nSUDO=no\nCAP=\nSVC_INSTALLED=0";
+  await withApp({ run }, async (base) => {
+    assert.equal((await (await fetch(`${base}/s1/gpu-clock`)).json()).passwordAllowed, true);
+  });
+  await withApp({ run, remoteAddr: "192.168.1.9" }, async (base) => {
+    assert.equal((await (await fetch(`${base}/s1/gpu-clock`)).json()).passwordAllowed, false);
   });
 });

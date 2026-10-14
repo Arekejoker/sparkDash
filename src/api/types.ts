@@ -214,6 +214,8 @@ export type GpuClockStatus =
       hwMaxMHz: number | null;
       /** Cap in effect right now (MHz), null when none is recorded. */
       capMHz: number | null;
+      /** The server accepts a typed sudo password on this connection (https or the machine itself). */
+      passwordAllowed?: boolean;
       /** "root" runs directly, "yes" = passwordless sudo works, "no" = it does not. */
       sudo: "root" | "yes" | "no";
       service: {

@@ -4,18 +4,21 @@
  * exactly as for power actions. Changing a cap uses the destructive limiter.
  */
 const LOOPBACK = /^(::1|127\.\d+\.\d+\.\d+|::ffff:127\.\d+\.\d+\.\d+)$/;
+const FORWARDED = ["x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded"];
 
 /**
  * A sudo password may only be typed over https or from the machine itself: on a plain-http
- * LAN page it would cross the network in the clear. (A proxy's X-Forwarded-Proto is the
- * client's own claim; this guards against mistakes, not against the person typing.)
+ * LAN page it would cross the network in the clear. A loopback peer only counts when the
+ * request was not relayed (a same-host reverse proxy on plain http makes every client look
+ * local, and says so with a forwarding header). A proxy's X-Forwarded-Proto is the client's
+ * own claim; this guards against mistakes, not against the person typing.
  */
 export function isSecureRequest(req) {
-  return (
-    req.secure === true ||
-    String(req.headers?.["x-forwarded-proto"] || "").split(",")[0].trim() === "https" ||
-    LOOPBACK.test(String(req.socket?.remoteAddress || ""))
-  );
+  const h = req.headers || {};
+  if (req.secure === true) return true;
+  if (String(h["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase() === "https") return true;
+  const relayed = FORWARDED.some((name) => h[name] !== undefined);
+  return !relayed && LOOPBACK.test(String(req.socket?.remoteAddress || ""));
 }
 
 export function registerGpuClockRoutes(app, { manager, registry, recordEvent, allowRead, allowChange, rejectLimited }) {
@@ -35,7 +38,8 @@ export function registerGpuClockRoutes(app, { manager, registry, recordEvent, al
     "/api/sparks/:id/gpu-clock",
     handle(async (spark, req, res) => {
       if (!allowRead(req)) return rejectLimited(res, "Too many requests");
-      res.json(await manager.status(spark));
+      // Tell the page whether a typed password would be accepted from here, so it never offers a field the server refuses.
+      res.json({ ...(await manager.status(spark)), passwordAllowed: isSecureRequest(req) });
     })
   );
 

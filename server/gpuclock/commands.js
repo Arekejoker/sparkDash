@@ -123,26 +123,35 @@ export function buildUnit({ minMHz, maxMHz, nvsmi = "/usr/bin/nvidia-smi", runDi
 
 /** The sudo gate: with a typed password a refusal means a wrong password, otherwise missing NOPASSWD. */
 function needSudoLine(paths) {
-  return paths.password
-    ? 'need_sudo || fail bad-password "the sudo password was not accepted"'
-    : 'need_sudo || fail no-sudo "passwordless sudo (NOPASSWD: ALL) is required for the user that runs the change"';
+  if (!paths.password) {
+    return 'need_sudo || fail no-sudo "passwordless sudo (NOPASSWD: ALL) is required for the user that runs the change"';
+  }
+  return [
+    "need_sudo || { case \"$SUDO_ERR\" in",
+    '  __missing__) fail no-sudo "sudo is not installed on this unit" ;;',
+    '  "") fail bad-password "the sudo password was not accepted" ;;',
+    '  *"incorrect password"*|*"Sorry, try again"*|*"password is required"*|*"Authentication failure"*) fail bad-password "the sudo password was not accepted" ;;',
+    '  *) fail no-sudo "sudo refused the request: $(clean "$SUDO_ERR")" ;;',
+    "esac; }",
+  ].join("\n");
 }
 
 function header(paths) {
   const nv = paths.nvsmi.map((c) => `"${c}"`).join(" ");
   return [
     "set -u",
-    'SUDO=""',
-    paths.sandbox ? ":" : `[ "$(id -u)" = 0 ] || SUDO="${paths.password ? "spw_sudo" : paths.manual ? "sudo" : "sudo -n"}"`,
-    // Read the password into a plain shell variable and drop it from the environment, so
-    // nothing this script starts inherits it.
+    // Read the password into a plain shell variable and drop it from the environment first
+    // thing, so nothing this script starts (not even `id`) inherits it.
     ...(paths.password
       ? [
           "PW=${SPARKDASH_SUDO_PW-}",
           "unset SPARKDASH_SUDO_PW",
-          "spw_sudo() { printf '%s\\n' \"$PW\" | sudo -S -p '' \"$@\"; }",
+          "spw_sudo() { printf '%s\\n' \"$PW\" | LC_ALL=C sudo -S -p '' \"$@\"; }",
         ]
       : []),
+    'SUDO=""',
+    paths.sandbox ? ":" : `[ "$(id -u)" = 0 ] || SUDO="${paths.password ? "spw_sudo" : paths.manual ? "sudo" : "sudo -n"}"`,
+
     `SYSTEMCTL=${paths.systemctl}`,
     `OWNER="${paths.sandbox ? "" : "-o root -g root"}"`,
     `UNIT=${paths.unitDir}/${UNIT_NAME}`,
@@ -155,10 +164,12 @@ function header(paths) {
       ? "fail() { printf 'Error: %s\\n' \"$2\" >&2; exit 1; }"
       : "fail() { printf 'RESULT=error\\nCODE=%s\\nMSG=%s\\n' \"$1\" \"$2\"; exit 0; }",
     'digits() { tr -dc 0-9; }',
+    'clean() { printf "%s" "$1" | head -n 1 | tr -cd "A-Za-z0-9 .,:_()/-" | head -c 160; }',
     'hwmax() { "$NV" --query-gpu=clocks.max.gr --format=csv,noheader,nounits 2>/dev/null | head -n 1 | digits; }',
     'bootid() { tr -dc "0-9a-fA-F-" < "$BOOTID_FILE" 2>/dev/null | head -c 64; }',
     paths.password
-      ? "need_sudo() { [ -z \"$SUDO\" ] && return 0; command -v sudo >/dev/null 2>&1 && printf '%s\\n' \"$PW\" | sudo -k -S -p '' true >/dev/null 2>&1; }"
+      ? // Why a refusal happened matters: only a wrong password counts toward the lock.
+        "need_sudo() { SUDO_ERR=''; [ -z \"$SUDO\" ] && return 0; command -v sudo >/dev/null 2>&1 || { SUDO_ERR=__missing__; return 1; }; SUDO_ERR=$(printf '%s\\n' \"$PW\" | LC_ALL=C sudo -k -S -p '' true 2>&1 >/dev/null) && return 0; return 1; }"
       : paths.manual
       ? 'need_sudo() { [ -z "$SUDO" ] && return 0; command -v sudo >/dev/null 2>&1 && sudo -v; }'
       : 'need_sudo() { [ -z "$SUDO" ] && return 0; command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; }',

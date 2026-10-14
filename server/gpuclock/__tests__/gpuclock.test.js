@@ -609,3 +609,48 @@ test("GpuClockManager: the password goes to the runner as input only, is redacte
   assert.doesNotMatch(e.message, /hunter2xyz/);
   assert.match(e.message, /\*\*\*/);
 });
+
+test("sudo refusals that are not a wrong password do not read as one", () => {
+  const sb = sandbox();
+  try {
+    fs.writeFileSync(path.join(sb.bin, "sudo"), "#!/bin/sh\necho 'sudo: you must have a tty to run sudo' >&2\nexit 1\n", { mode: 0o755 });
+    const res = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: false }, pwPaths(sb)), { env: pwEnv(sb, "whatever") });
+    assert.equal(res.CODE, "no-sudo");
+    assert.match(res.MSG, /sudo refused the request: sudo: you must have a tty to run sudo/);
+    fs.writeFileSync(path.join(sb.bin, "sudo"), "#!/bin/sh\necho 'Sorry, try again.' >&2\nexit 1\n", { mode: 0o755 });
+    const wrong = sb.run(buildResetProgram(pwPaths(sb)), { env: pwEnv(sb, "whatever") });
+    assert.equal(wrong.CODE, "bad-password");
+    assert.equal(sb.read("lock"), null);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("the password is read before anything else runs", () => {
+  const prog = buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: false }, { password: true });
+  const lines = prog.split("\n");
+  assert.equal(lines[0], "set -u");
+  assert.match(lines[1], /^PW=\$\{SPARKDASH_SUDO_PW-\}$/);
+  assert.equal(lines[2], "unset SPARKDASH_SUDO_PW");
+  assert.ok(lines.findIndex((l) => l.includes("id -u")) > 2);
+});
+
+test("the password lock follows the account on the machine, not the registry entry, and has a global cap", async () => {
+  let t = 5_000_000;
+  const m = new GpuClockManager({
+    now: () => t,
+    run: async () => "RESULT=error\nCODE=bad-password\nMSG=x",
+  });
+  const mk = (id, extra = {}) => ({ id, name: id, kind: "spark", lanIp: "10.0.0.7", ssh: { user: "zurih", host: "10.0.0.7", port: 22 }, ...extra });
+  const wrong = (sp) => m.apply(sp, { maxMHz: 1800, sudoPassword: "x" });
+  for (let i = 0; i < 3; i++) await assert.rejects(wrong(mk("a")), (e) => e.status === 403);
+  // A second entry for the same account is locked too: no fresh guesses by re-adding the unit.
+  await assert.rejects(wrong(mk("b")), (e) => e.status === 429);
+  await assert.rejects(wrong(mk("c", { ssh: { user: "ZURIH", host: "10.0.0.7", port: 22 } })), (e) => e.status === 429);
+  // A different account is separate, until the global budget (9) is spent.
+  const others = [mk("d", { ssh: { user: "u1", host: "10.0.0.8", port: 22 } }), mk("e", { ssh: { user: "u2", host: "10.0.0.9", port: 22 } })];
+  for (const sp of others) for (let i = 0; i < 3; i++) await assert.rejects(wrong(sp), (e) => e.status === 403);
+  await assert.rejects(wrong(mk("f", { ssh: { user: "u3", host: "10.0.0.10", port: 22 } })), (e) => e.status === 429, "global cap");
+  t += 5 * 60_000 + 1;
+  await assert.rejects(wrong(mk("f", { ssh: { user: "u3", host: "10.0.0.10", port: 22 } })), (e) => e.status === 403, "expired");
+});
