@@ -114,7 +114,7 @@ export function createAlertsRuntime(opts) {
   config = { ...config, channels: config.channels.map((c) => ({ ...c, url: urls.get(c.id) || "" })) };
   if (loaded.legacyUrls.size > 0) {
     try {
-      secrets.save(new Map(config.channels.filter((c) => c.url).map((c) => [c.id, c.url])));
+      secrets.save(new Map(config.channels.filter((c) => c.url).map((c) => [c.id, c.url])), { keepIds: config.channels.map((c) => c.id) });
       saveAlertsFile(opts.filePath, config, savedState);
       log.log?.(`[alerts] moved ${loaded.legacyUrls.size} channel URL(s) from ${opts.filePath} into the encrypted secrets store${migrated < loaded.legacyUrls.size ? " (the store already had some of them)" : ""}`);
     } catch (err) {
@@ -180,7 +180,7 @@ export function createAlertsRuntime(opts) {
     for (const c of next.channels) {
       if (c.url && c.url !== before.get(c.id)) await assertResolvesAllowed(c);
     }
-    secrets.save(new Map(next.channels.filter((c) => c.url).map((c) => [c.id, c.url])));
+    secrets.save(new Map(next.channels.filter((c) => c.url).map((c) => [c.id, c.url])), { keepIds: next.channels.map((c) => c.id) });
     saveAlertsFile(opts.filePath, next, savedState);
     config = next;
     const ids = new Set(next.channels.map((c) => c.id));

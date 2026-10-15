@@ -263,17 +263,28 @@ export function saveSecrets(passwords, llmApiKeys = new Map()) {
 
 // ─── File sections ───────────────────────────────────────
 
-/** One section of the file as stored (still encrypted), or {} when absent or unreadable. */
+/**
+ * One section of the file as stored (still encrypted); {} when the file or the section is absent.
+ * Throws when the file exists but cannot be parsed: callers that go on to rewrite the file
+ * must not treat that as "nothing stored", or the other sections would be lost.
+ */
 function readRawSection(name) {
+  if (!fs.existsSync(SPARKS_SECRETS_PATH)) return {};
+  let data;
   try {
-    if (!fs.existsSync(SPARKS_SECRETS_PATH)) return {};
-    const data = JSON.parse(fs.readFileSync(SPARKS_SECRETS_PATH, "utf8"));
-    const section = data?.[name];
-    if (!section || typeof section !== "object" || Array.isArray(section)) return {};
-    return Object.fromEntries(Object.entries(section).filter(([id, blob]) => id && typeof blob === "string"));
-  } catch {
-    return {};
+    data = JSON.parse(fs.readFileSync(SPARKS_SECRETS_PATH, "utf8"));
+  } catch (err) {
+    throw new Error(
+      `${SPARKS_SECRETS_PATH} exists but cannot be read (${err.message}); not overwriting it. ` +
+        "Fix or move the file aside to continue."
+    );
   }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error(`${SPARKS_SECRETS_PATH} is not a JSON object; not overwriting it. Fix or move the file aside to continue.`);
+  }
+  const section = data[name];
+  if (!section || typeof section !== "object" || Array.isArray(section)) return {};
+  return Object.fromEntries(Object.entries(section).filter(([id, blob]) => id && typeof blob === "string"));
 }
 
 function clearSecretsFile() {
@@ -306,7 +317,13 @@ function writeSecretsFile({ secrets, llmApiKeys, alertChannels }) {
 export function loadAlertChannelUrls() {
   /** @type {Map<string, string>} */
   const urls = new Map();
-  const section = readRawSection("alertChannels");
+  let section;
+  try {
+    section = readRawSection("alertChannels");
+  } catch (err) {
+    console.error(`[secretsStore] Failed to load alert channel URLs: ${err.message}`);
+    return urls;
+  }
   if (Object.keys(section).length === 0) return urls;
   let failed = 0;
   try {
@@ -331,20 +348,32 @@ export function loadAlertChannelUrls() {
 
 /**
  * Replace the stored alert channel URLs (encrypted). SSH passwords and LLM API
- * keys stay exactly as they are on disk. Throws when the file cannot be written.
+ * keys stay exactly as they are on disk. Throws when the file cannot be read or written.
+ * A stored URL that cannot be decrypted (for example after a key change) is kept as is
+ * while its channel is still configured, so entering the key again brings it back.
  * @param {Map<string, string>} urls channel id → URL
+ * @param {{ keepIds?: Iterable<string> }} [opts] ids of the channels that are still configured
  */
-export function saveAlertChannelUrls(urls) {
+export function saveAlertChannelUrls(urls, opts = {}) {
   const secrets = readRawSection("secrets");
   const llmApiKeys = readRawSection("llmApiKeys");
+  const existing = readRawSection("alertChannels");
   /** @type {Record<string, string>} */
   const alertChannels = {};
   const entries = urls ? [...urls.entries()].filter(([id, url]) => id && url) : [];
-  if (entries.length > 0) {
-    const key = resolveKey();
-    for (const [id, url] of entries) alertChannels[id] = encrypt(String(url), key);
+  const keep = new Set(opts.keepIds || []);
+  const needKey = entries.length > 0 || Object.keys(existing).length > 0;
+  const key = needKey ? resolveKey() : null;
+  for (const [id, url] of entries) alertChannels[id] = encrypt(String(url), key);
+  for (const [id, blob] of Object.entries(existing)) {
+    if (alertChannels[id] || !keep.has(id)) continue;
+    try {
+      decrypt(blob, key);
+    } catch {
+      alertChannels[id] = blob;
+    }
   }
-  if (Object.keys(secrets).length === 0 && Object.keys(llmApiKeys).length === 0 && entries.length === 0) {
+  if (Object.keys(secrets).length === 0 && Object.keys(llmApiKeys).length === 0 && Object.keys(alertChannels).length === 0) {
     clearSecretsFile();
     return;
   }

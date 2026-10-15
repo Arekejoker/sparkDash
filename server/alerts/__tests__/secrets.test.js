@@ -63,3 +63,31 @@ test("a plaintext URL in alerts.json is moved into the encrypted store at startu
   const again = createAlertsRuntime({ filePath: file, isEnabled: () => false, log: quietLog });
   assert.equal(again.publicConfig().channels[0].url, "https://ntfy.example.com/…");
 });
+
+test("an unreadable secrets file is never overwritten by a save", () => {
+  const file = process.env.SPARKS_SECRETS_PATH;
+  fs.writeFileSync(file, '{"version":2,"secrets":{"spark-1":"abc"');
+  const before = fs.readFileSync(file, "utf8");
+  assert.throws(() => saveAlertChannelUrls(new Map([["ch_a", URL_A]])), /cannot be read/);
+  assert.throws(() => saveSecrets(new Map([["spark-1", "pw-test"]]), new Map()), /cannot be read/);
+  assert.throws(() => saveSecrets(new Map(), new Map()), /cannot be read/, "an empty save does not delete it either");
+  assert.equal(fs.readFileSync(file, "utf8"), before);
+  assert.equal(loadAlertChannelUrls().size, 0, "loading never throws");
+});
+
+test("a channel URL that cannot be decrypted is kept while its channel is configured, dropped once removed", () => {
+  const file = process.env.SPARKS_SECRETS_PATH;
+  saveAlertChannelUrls(new Map([["ch_a", URL_A], ["ch_b", URL_B]]));
+  const data = JSON.parse(fs.readFileSync(file, "utf8"));
+  data.alertChannels.ch_a = "not-decryptable-with-this-key";
+  fs.writeFileSync(file, JSON.stringify(data));
+  assert.equal(loadAlertChannelUrls().has("ch_a"), false);
+  // ch_b edited, ch_a still configured (its URL is empty in memory): ciphertext is copied through.
+  saveAlertChannelUrls(new Map([["ch_b", URL_B + "x"]]), { keepIds: ["ch_a", "ch_b"] });
+  const kept = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(kept.alertChannels.ch_a, "not-decryptable-with-this-key");
+  assert.equal(loadAlertChannelUrls().get("ch_b"), URL_B + "x");
+  // The channel is removed: its stale ciphertext goes with it.
+  saveAlertChannelUrls(new Map([["ch_b", URL_B]]), { keepIds: ["ch_b"] });
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(file, "utf8")).alertChannels), ["ch_b"]);
+});
