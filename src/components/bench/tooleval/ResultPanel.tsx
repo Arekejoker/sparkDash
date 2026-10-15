@@ -6,6 +6,7 @@ import { explainErrorCode, fmtDate, fmtDuration, toolNotes } from "./format";
 import { useToolEvalResult } from "./hooks";
 import { hasScenarioData, isObj, normalizeToolResult } from "./normalize";
 import { CopyButton, Notice, RunTerminal, Skeleton } from "./parts";
+import { buildToolEvalShareCard } from "../../SparkPage/benchShareCard";
 import { ShowCardButton } from "./ShowCardButton";
 import { statusLabel, statusTone } from "./status";
 import { ToolResult } from "./ToolResult";
@@ -70,7 +71,17 @@ export function ResultPanel({ sparkId, sparkName, type, run, lines, errorCode, v
 
   return (
     <div className="te-result">
-      <RunMeta run={run} actions={scenarios && tool && isToolType ? <ShowCardButton data={tool} run={run} sparkName={sparkName ?? ""} /> : null} />
+      <RunMeta run={run} actions={
+          scenarios && tool && isToolType ? (
+            <ShowCardButton
+              kind="tool-eval"
+              build={() => buildToolEvalShareCard(tool, run, { sparkName })}
+              dialogLabel="Tool Eval share card"
+              imgAlt={`Tool Eval Bench result card${tool.score != null ? `: score ${tool.score.toFixed(1)}` : ""}`}
+              title="Render these results as an image you can copy or save"
+            />
+          ) : null
+        } />
       {failed ? (
         <Notice tone={run.status === "failed" ? "bad" : "warn"} title={run.status === "failed" ? `The run failed${run.exitCode != null ? ` (exit code ${run.exitCode})` : ""}` : run.status === "stopped" ? "The run was stopped" : "The run is gone"}>
           {errorCode

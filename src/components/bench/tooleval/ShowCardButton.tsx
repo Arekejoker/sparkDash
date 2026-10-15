@@ -1,24 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { ToolEvalRun } from "../../../api/types";
 import { ImageIcon } from "../../ui/icons";
-import { buildToolEvalShareCard, shareCardFileName, type ShareCardModel } from "../../SparkPage/benchShareCard";
+import { shareCardFileName, type ShareCardModel } from "../../SparkPage/benchShareCard";
 import { CardPreview } from "../../SparkPage/CardPreview";
 import { canCopyImages, copyPngToClipboard, renderShareCardPng } from "../../SparkPage/shareImage";
-import type { NormToolResult } from "./normalize";
 
 interface ShowCardButtonProps {
-  data: NormToolResult;
-  run: ToolEvalRun;
-  sparkName: string;
+  /** Builds the card when the button is clicked, from whatever the page shows right then. */
+  build: () => ShareCardModel;
+  /** Which card this is — used for the download name. */
+  kind: "tool-eval" | "tool-eval-compare";
+  label?: string;
+  /** Accessible name of the preview window, and the card image's alt text. */
+  dialogLabel: string;
+  imgAlt: string;
+  title: string;
 }
 
 /**
- * "Show card": renders the run's results as a share image (the same canvas card
- * the decode, prefill and quality benchmarks make) and opens it in a window where
- * it can be copied to the clipboard or saved as a PNG.
+ * "Show card": renders results as a share image (the same canvas card the decode,
+ * prefill and quality benchmarks make) and opens it in a window where it can be
+ * copied to the clipboard or saved as a PNG.
  */
-export function ShowCardButton({ data, run, sparkName }: ShowCardButtonProps) {
+export function ShowCardButton({ build, kind, label = "Show card", dialogLabel, imgAlt, title }: ShowCardButtonProps) {
   const [state, setState] = useState<"idle" | "working" | "error">("idle");
   const [card, setCard] = useState<{ url: string; blob: Blob; model: ShareCardModel } | null>(null);
   const [copied, setCopied] = useState<"idle" | "ok" | "err">("idle");
@@ -54,7 +58,7 @@ export function ShowCardButton({ data, run, sparkName }: ShowCardButtonProps) {
   const show = async () => {
     if (state === "working") return;
     setState("working");
-    const model = buildToolEvalShareCard(data, run, { sparkName });
+    const model = build();
     const blob = await renderShareCardPng(model);
     if (!blob) {
       setState("error");
@@ -68,7 +72,7 @@ export function ShowCardButton({ data, run, sparkName }: ShowCardButtonProps) {
     if (!card) return;
     const link = document.createElement("a");
     link.href = card.url;
-    link.download = shareCardFileName(card.model, "tool-eval");
+    link.download = shareCardFileName(card.model, kind);
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -93,17 +97,17 @@ export function ShowCardButton({ data, run, sparkName }: ShowCardButtonProps) {
         className="btn btn--sm"
         onClick={() => void show()}
         disabled={state === "working"}
-        title="Render these results as an image you can copy or save"
+        title={title}
       >
         <ImageIcon className="h-3.5 w-3.5" />
-        {state === "working" ? "Rendering…" : state === "error" ? "Could not render — retry" : "Show card"}
+        {state === "working" ? "Rendering…" : state === "error" ? "Could not render — retry" : label}
       </button>
       {card
         ? createPortal(
             <CardPreview
               url={card.url}
-              label="Tool Eval share card"
-              imgAlt={`Tool Eval Bench result card${data.score != null ? `: score ${data.score.toFixed(1)}` : ""}`}
+              label={dialogLabel}
+              imgAlt={imgAlt}
               hint={
                 imageClipboard ? (
                   <>Copy it to the clipboard or save it as a PNG. The card follows the dashboard's current theme.</>

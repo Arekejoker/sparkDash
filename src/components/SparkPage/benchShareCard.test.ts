@@ -8,6 +8,7 @@ import {
   buildDecodeShareCard,
   buildPrefillShareCard,
   buildQualityShareCard,
+  buildToolEvalCompareShareCard,
   buildToolEvalShareCard,
   detectShareCardTheme,
   paintShareCard,
@@ -679,5 +680,71 @@ describe("tool eval share card", () => {
     expect(() => paintShareCard(ctx, m, "dark")).not.toThrow();
     expect(ctx.texts).toContain("—");
     expect(ctx.texts).toContain("Unknown model");
+  });
+});
+
+describe("tool eval comparison card", () => {
+  const side = (score: number, pcts: [number, number], statuses: string[], over: Record<string, unknown> = {}) =>
+    normalizeToolResult({
+      final_score: score,
+      deployability: 70,
+      responsiveness: 90,
+      config: { model: "org/model" },
+      scores: {
+        category_scores: [
+          { category: "A", percent: pcts[0] },
+          { category: "B", percent: pcts[1] },
+        ],
+        scenario_results: statuses.map((status, i) => ({ scenario_id: `TC-${i + 1}`, status, category: "A" })),
+      },
+      ...over,
+    })!;
+  const run = { label: "", startedAt: Date.UTC(2026, 8, 10), model: null, baseUrl: "http://x", options: {}, type: "tool-eval" };
+  const a = () => side(60, [50, 80], ["pass", "fail", "partial", "pass"]);
+  const b = () => side(72.5, [70, 75], ["pass", "pass", "fail", "pass"], { deployability: 71, responsiveness: 85 });
+
+  it("carries both scores, the change, the metric tiles and the scenario moves", () => {
+    const m = buildToolEvalCompareShareCard(a(), b(), run, { ...run, label: "fp8 KV" }, { sparkName: "spark-1" }, 0);
+    const c = m.toolEvalCompare!;
+    expect([m.title, m.status.label]).toEqual(["Tool Eval Comparison", "SAME SETUP"]);
+    expect([c.a.heading, c.b.heading]).toEqual(["RUN A · 2026-09-10", "RUN B · fp8 KV"]);
+    expect([c.a.score, c.b.score, c.scoreDelta, c.scoreDeltaTone]).toEqual([60, 72.5, "+12.5", "ok"]);
+    expect(c.stats.map((s) => [s.label, s.a, s.b, s.delta, s.tone])).toEqual([
+      ["Deployability", "70.0", "71.0", "+1.0", "ok"],
+      ["Responsiveness", "90.0", "85.0", "−5.0", "bad"],
+      ["Scenarios passed", "2", "3", "+1", "ok"],
+    ]);
+    // TC-2 fail→pass improved, TC-3 partial→fail regressed, two unchanged.
+    expect(c.changes).toEqual({ improved: 1, regressed: 1, unchanged: 2 });
+    expect(c.categories.map((x) => [x.id, x.a, x.b, x.delta, x.tone])).toEqual([
+      ["A", 50, 70, "+20.0 pts", "ok"],
+      ["B", 80, 75, "−5.0 pts", "bad"],
+    ]);
+    expect(shareCardFileName(m, "tool-eval-compare")).toMatch(/^sparkdash-tool-eval-compare-spark-1-/);
+  });
+
+  it("says when the setups differ and keeps failures off the card", () => {
+    const m = buildToolEvalCompareShareCard(a(), b(), run, { ...run, baseUrl: "http://y", model: "other" }, {}, 0);
+    expect(m.status).toEqual({ label: "DIFFERENT SETUP", tone: "warn" });
+    expect(m.toolEvalCompare!.caveat).toMatch(/^Different models/);
+    expect(m.toolEvalCompare!.caveat).toMatch(/\(\+1 more\)$/);
+    const ctx = fakeContext();
+    paintShareCard(ctx, m, "dark");
+    expect(ctx.texts).toContain("+12.5");
+    expect(ctx.texts).toContain("Tool selection");
+    expect(ctx.texts.some((t) => t.startsWith("⚠"))).toBe(true);
+    expect(ctx.texts).not.toContain("fail");
+    expect(ctx.texts.some((t) => /fail/i.test(t) && !/^⚠/.test(t))).toBe(false);
+  });
+
+  it("grows with the category count and copes with results that only have categories", () => {
+    const m = buildToolEvalCompareShareCard(a(), b(), run, run, {}, 0);
+    const cat = m.toolEvalCompare!.categories[0];
+    const big = { ...m, toolEvalCompare: { ...m.toolEvalCompare!, categories: Array.from({ length: 16 }, () => cat) } };
+    expect(shareCardHeight(big)).toBeGreaterThan(shareCardHeight(m));
+    const bare = (score: number) => normalizeToolResult({ final_score: score, scores: { category_scores: [{ category: "A", percent: score }] } })!;
+    const n = buildToolEvalCompareShareCard(bare(40), bare(55), run, run, {}, 0);
+    expect(n.toolEvalCompare!.changes).toBeNull();
+    expect(() => paintShareCard(fakeContext(), n, "light")).not.toThrow();
   });
 });
