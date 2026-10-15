@@ -420,8 +420,8 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
                 onChange={(v) => update({ showKpiMemory: v })}
               />
               <ToggleRow
-                title="Show Tokens today tile"
-                help="Overview tile with the tokens generated today (or the online unit count, when no tokens are tracked yet)."
+                title="Show Tokens in last 24 hours tile"
+                help="Overview tile with the tokens generated in the last 24 hours (or the online unit count, when no tokens are tracked yet)."
                 checked={settings.showKpiTokens ?? true}
                 onChange={(v) => update({ showKpiTokens: v })}
               />

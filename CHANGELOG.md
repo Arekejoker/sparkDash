@@ -10,6 +10,7 @@ Format: version sections are listed newest first.
 ## [Unreleased]
 
 ### Added
+- **Token totals: last 24 hours, 6 hours and 1 hour; one row per unit and model.** The range selectors on Overview and the unit's LLM panel gain **Last 6 hours** and **Last 1 hour**, and **Today** becomes a rolling **Last 24 hours** (hourly UTC buckets, so a range spans N-1 to N hours of real time; `GET /api/llm-token-totals?range=today|6h|1h`). The Overview tile is now **Tokens in last 24 hours**, and the Overview token table lists one row per unit and model instead of one row per model with a unit count; ports of the same model on one unit merge. Thanks to @yr75myjnqx-tech (#223).
 - **Back to Overview on each unit page.** The unit page header has a small **← Overview** link above the unit name, for when the sidebar is collapsed or hidden on a narrow screen. Thanks to @yr75myjnqx-tech (#221).
 
 ### Fixed

@@ -78,7 +78,7 @@ Monitored units run **Linux**, **macOS**, or **Windows** (a Windows PC with an N
 - **Fixes**: GPU and energy data on remote units whose login shell is zsh, and the TensorFold Slots tile now counts occupied lanes.
 
 ### Version 2.40.0
-- **Hide any Overview panel**: Settings has switches for Recent activity and for each of the four tiles (Fleet decode, Fleet power, Memory in use, Tokens today), next to Fleet energy and LLM token totals.
+- **Hide any Overview panel**: Settings has switches for Recent activity and for each of the four tiles (Fleet decode, Fleet power, Memory in use, Tokens in last 24 hours), next to Fleet energy and LLM token totals.
 - **LM Studio and Ollama** are detected by their own endpoints, so they are no longer labelled SGLang or vLLM; LLM panels match their port, and the Add wizard and LLM panels have LM Studio / Ollama / TensorFold port presets.
 - **Windows PCs with an AMD iGPU (Strix Halo)** show GPU use and memory from Windows' GPU counters. Windows setup docs now cover the `administrators_authorized_keys` gotcha.
 
@@ -866,7 +866,7 @@ Gear icon in the header, or `GET`/`PUT` `/api/settings`:
 | Electricity price / currency | not set / `$` | Per kWh, for the estimated cost on the Fleet energy page; empty hides cost |
 | Show LLM Token Totals | true | Overview card with cumulative tokens per model |
 | Show Recent activity | true | Overview card with the latest health and kernel events (the Activity page is always in the sidebar) |
-| Show Fleet decode / Fleet power / Memory in use / Tokens today tile | true | Each of the four Overview tiles can be hidden on its own; the rest share the row (Tokens today also covers the Online count that replaces it when no tokens are tracked) |
+| Show Fleet decode / Fleet power / Memory in use / Tokens in last 24 hours tile | true | Each of the four Overview tiles can be hidden on its own; the rest share the row (Tokens in last 24 hours also covers the Online count that replaces it when no tokens are tracked) |
 | Show active fleet exceptions | false | Overview strip for offline units, throttling, disk and LLM alerts |
 | Show search and status filters | false | Overview search field and status dropdown |
 | Save benchmark debug traces | false | Store prompts, HTTP ids and GPU samples in bench history (larger files) |

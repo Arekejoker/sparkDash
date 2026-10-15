@@ -29,7 +29,7 @@ const DEFAULTS = Object.freeze({
   showOverviewSearch: false,
   /** Overview LLM token totals card (cumulative tokens per model). On by default. */
   showLlmTokenTotals: true,
-  /** Overview KPI tiles (Fleet decode, Fleet power, Memory in use, Tokens today) and the Recent activity card. On by default. */
+  /** Overview KPI tiles (Fleet decode, Fleet power, Memory in use, Tokens in last 24 hours) and the Recent activity card. On by default. */
   showKpiDecode: true,
   showKpiPower: true,
   showKpiMemory: true,
