@@ -91,6 +91,18 @@ export function collectionWasSuccessful(result) {
   return result?.[COLLECTION_SUCCESS] === true;
 }
 
+const NVIDIA_SIDE_FAILED = Symbol("sparkdash.nvidiaSideFailed");
+
+/** True when nvidia-smi is installed but gave no devices on a host that has an Intel card. */
+export function nvidiaSideFailed(result) {
+  return result?.[NVIDIA_SIDE_FAILED] === true;
+}
+
+function markNvidiaSideFailed(result, failed) {
+  if (failed) Object.defineProperty(result, NVIDIA_SIDE_FAILED, { value: true, enumerable: false, configurable: true });
+  return result;
+}
+
 /** Convert amd-smi JSON output into the collector's per-device GPU shape. */
 export function parseAmdSmiMetrics(raw, limitRaw = null) {
   let payload;
@@ -388,7 +400,8 @@ export class SystemCollector {
               await this._getRemoteGpu(async () => windowsGpuAsLinuxOutput(await this._windowsRun("gpu", WINDOWS_GPU_SCRIPT)))
             )
           : await this._getRemoteGpu();
-      return tagCollectionResult(gpuData, this._isSuccessfulGpuCollection(gpuData));
+      // A broken NVIDIA side must not look healthy just because another vendor's card answered.
+      return tagCollectionResult(gpuData, this._isSuccessfulGpuCollection(gpuData) && !nvidiaSideFailed(gpuData));
     } catch (err) {
       console.error(`[SystemCollector] GPU error for ${this.spark.id}:`, err.message);
       return tagCollectionResult(this._defaultGpu(), false);
@@ -580,14 +593,17 @@ export class SystemCollector {
     const [gpuOut, amd, clockCapMHz, intelOut] = await Promise.all([
       this._nvidiaSmi(
         "--query-gpu=temperature.gpu,utilization.gpu,power.draw,power.limit,clocks.current.sm,clocks.max.sm,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.sw_thermal_slowdown,clocks_throttle_reasons.hw_slowdown,clocks_throttle_reasons.sw_power_cap,index,name,uuid --format=csv,noheader,nounits"
-      ).catch(() => ""),
+      ).catch(() => null),
       this._probeLocalAmd(),
       this._readLocalClockCap(),
       this._probeIntelLocal(vramRead),
     ]);
-    const nvidiaDevices = this._parseGpuLines(gpuOut);
+    const nvidiaDevices = this._parseGpuLines(gpuOut ?? "");
     this._applyClockCap(nvidiaDevices, clockCapMHz);
-    const otherDevices = [...amd.devices, ...this._intelDevices(this._sampleIntel(intelOut, vramRead))];
+    const intelDevices = this._intelDevices(this._sampleIntel(intelOut, vramRead));
+    const otherDevices = [...amd.devices, ...intelDevices];
+    // nvidia-smi failing is normal on a host without NVIDIA; installed-but-failing next to an Intel card is not.
+    const nvidiaFailed = gpuOut === null && intelDevices.length > 0 && (await this._nvidiaSmiInstalled());
     this._lastVramPerDevice = [];
     const nvidiaVram = nvidiaDevices.length ? await this._queryNvidiaVram() : { used: 0, total: 0, percentage: 0, available: 0 };
     const otherVram = this._sumDeviceVram(otherDevices);
@@ -609,7 +625,7 @@ export class SystemCollector {
     const apps = this._cachedApps();
     const processes = this._topProcesses(apps);
 
-    return {
+    return markNvidiaSideFailed({
       temperature: gpu.temperature,
       usage: gpu.usage,
       power: { draw: gpu.powerDraw, limit: gpu.powerLimit, systemDraw },
@@ -628,7 +644,22 @@ export class SystemCollector {
         vramUsed: devices.some((device) => device.metricAvailability?.vramUsed !== false),
         vramTotal: devices.some((device) => device.metricAvailability?.vramTotal !== false),
       },
-    };
+    }, nvidiaFailed);
+  }
+
+  /** Whether nvidia-smi exists on the host. Cached for 10 minutes; only asked when it just failed. */
+  async _nvidiaSmiInstalled() {
+    const c = (this._nvidiaInstalled ??= { value: null, at: 0 });
+    const now = Date.now();
+    if (c.value != null && now - c.at < 10 * 60 * 1000) return c.value;
+    let found = false;
+    try {
+      found = String(await this._execOnHost("command -v nvidia-smi 2>/dev/null")).trim() !== "";
+    } catch {
+      found = false;
+    }
+    this._nvidiaInstalled = { value: found, at: now };
+    return found;
   }
 
   /**
@@ -1855,6 +1886,9 @@ export class SystemCollector {
       // Probe output only exists in the section format; legacy fixtures carry no Intel data.
       const intelDevices = this._intelDevices(this._sampleIntel(legacy ? "" : intelOut, vramRead));
       const otherDevices = [...amdDevices, ...intelDevices];
+      // The NVIDIA section is only printed when nvidia-smi is installed. Installed but no devices,
+      // next to an Intel card, means a broken NVIDIA side, not an Intel-only host.
+      const nvidiaFailed = !legacy && "NVIDIA" in sections && cliDevices.length === 0 && intelDevices.length > 0;
       const gpuDevices = [...cliDevices, ...otherDevices];
       const gpu = this._aggregateGpuDevices(gpuDevices);
       if (!gpuDevices.length) return this._defaultGpu();
@@ -1935,7 +1969,7 @@ export class SystemCollector {
       const processes = this._topProcesses(cachedApps);
       const vram = { used: usedMB, total: totalMB, percentage, available: availableMB };
 
-      return {
+      return markNvidiaSideFailed({
         temperature: gpu.temperature,
         usage: gpu.usage,
         power: { draw: gpu.powerDraw, limit: gpu.powerLimit, systemDraw },
@@ -1954,7 +1988,7 @@ export class SystemCollector {
           vramUsed: gpuDevices.some((device) => device.metricAvailability?.vramUsed !== false),
           vramTotal: gpuDevices.some((device) => device.metricAvailability?.vramTotal !== false),
         },
-      };
+      }, nvidiaFailed);
     } catch (err) {
       console.error(`[SystemCollector] Remote GPU error for ${this.spark.id}:`, err.message);
       return this._defaultGpu();

@@ -8,7 +8,7 @@ import { IntelSudoGate, IntelVramCache } from "../intelGpu.js";
 // The sudo debugfs read is opt-in; these tests run with it on (the off case is tested below).
 const settingsDir = fs.mkdtempSync(path.join(os.tmpdir(), "sparkdash-intel-settings-"));
 process.env.SETTINGS_JSON_PATH = path.join(settingsDir, "settings.json");
-const { SystemCollector } = await import("../SystemCollector.js");
+const { SystemCollector, nvidiaSideFailed, collectionWasSuccessful } = await import("../SystemCollector.js");
 const { loadSettings, updateSettings } = await import("../../settings.js");
 loadSettings();
 updateSettings({ intelVramSudo: true });
@@ -363,4 +363,58 @@ test("with intelVramSudo off (the default) the probe never uses sudo", async () 
   } finally {
     updateSettings({ intelVramSudo: true });
   }
+});
+
+// nvidia-smi installed but returning nothing (broken driver) next to an Intel card must not look healthy.
+const BROKEN_NVIDIA = "__NVIDIA__\n\n__NVIDIA_VRAM__\n\n__NVIDIA_APPS__\n";
+const withBrokenNvidia = () =>
+  `${BROKEN_NVIDIA}\n__MEMINFO__\n${MEMINFO}\n__INTEL__\n${probe("1000.00", 5000000000, 800000)}`;
+
+// collectGpu() on a remote collector, with the SSH executor replaced.
+const collectRemote = (c, output) => {
+  const real = c._getRemoteGpu.bind(c);
+  c._getRemoteGpu = () => real(async () => output);
+  return c.collectGpu();
+};
+
+test("remote: nvidia-smi installed but empty next to an Intel card marks the collection failed", async () => {
+  const gpu = await remote()._getRemoteGpu(async () => withBrokenNvidia());
+  assert.equal(gpu.gpus.length, 1, "the Intel card is still shown");
+  assert.equal(gpu.gpus[0].vendor, "intel");
+  assert.equal(nvidiaSideFailed(gpu), true);
+  assert.equal(collectionWasSuccessful(await collectRemote(remote(), withBrokenNvidia())), false);
+});
+
+test("remote: a host with no nvidia-smi at all and an Intel card is still Intel-only and healthy", async () => {
+  const output = out(NONE, probe("1000.00", 5000000000, 800000));
+  assert.equal(nvidiaSideFailed(await remote()._getRemoteGpu(async () => output)), false);
+  assert.equal(collectionWasSuccessful(await collectRemote(remote(), output)), true);
+});
+
+function localIntel(smiInstalled) {
+  const c = new SystemCollector({ id: "t", isLocal: true, kind: "host" });
+  c._nvidiaSmi = async () => {
+    throw new Error("NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver");
+  };
+  c._nvidiaSmiInstalled = async () => smiInstalled;
+  c._probeIntelLocal = async () => probe("1000.00", 5000000000, 800000);
+  c._probeLocalAmd = async () => ({ devices: [] });
+  c._readLocalClockCap = async () => null;
+  c._getCPUPower = async () => ({ draw: 10 });
+  c._nvErrNoMemory = async () => 0;
+  c._kernelErrors = async () => null;
+  return c;
+}
+
+test("local: nvidia-smi installed but failing next to an Intel card marks the collection failed", async () => {
+  const gpu = await localIntel(true).collectGpu();
+  assert.equal(gpu.gpus[0].vendor, "intel", "the Intel card is still shown");
+  assert.equal(nvidiaSideFailed(gpu), true);
+  assert.equal(collectionWasSuccessful(gpu), false);
+});
+
+test("local: no nvidia-smi on the host and an Intel card is still Intel-only and healthy", async () => {
+  const gpu = await localIntel(false).collectGpu();
+  assert.equal(nvidiaSideFailed(gpu), false);
+  assert.equal(collectionWasSuccessful(gpu), true);
 });
