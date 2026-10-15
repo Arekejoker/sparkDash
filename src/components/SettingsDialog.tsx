@@ -4,6 +4,7 @@ import { fetchSettings, updateSettings } from "../api/client";
 import { clearToken, getToken, onTokenChange, requestTokenPrompt } from "../api/authToken";
 import type { Settings } from "../api/types";
 import { useModalPresence } from "../hooks/useModalPresence";
+import { useOverlayClose } from "../hooks/useOverlayClose";
 import packageJson from "../../package.json";
 import { XIcon } from "./ui/icons";
 import "../styles/dialogs.css";
@@ -104,6 +105,7 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
   }, [open]);
 
   const { mounted, visible } = useModalPresence(open);
+  const overlayClose = useOverlayClose(onClose);
 
   const timeZones = useMemo(() => listTimeZones(), []);
   const [tzTouched, setTzTouched] = useState(false);
@@ -151,9 +153,7 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
   return (
     <div
       className={`settings-overlay${visible ? " is-open" : ""}`}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      {...overlayClose}
     >
       <div className="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <div className="modal-sheet__header">

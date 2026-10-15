@@ -9,6 +9,9 @@ Format: version sections are listed newest first.
 
 ## [Unreleased]
 
+### Fixed
+- **Dialogs no longer close when a text selection ends outside them.** Dragging to select text in a field and releasing the mouse on the dark overlay used to close Add Spark, Settings and the other dialogs, losing what was typed. The overlay now closes only when the press also started on it (one shared `useOverlayClose` hook). Reported in #224.
+
 ---
 
 ## [2.50.0] — 2026-10-15
