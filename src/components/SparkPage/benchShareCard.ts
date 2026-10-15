@@ -1320,11 +1320,13 @@ function paintToolEvalCard(ctx: ShareCardContext, P: Palette, model: ShareCardMo
   ctx.textAlign = "right";
   ctx.font = font(400, 20);
   ctx.fillText(te.summary, sx + sw, stripY + 34);
-  const outcomes: { label: string; n: number; color: string }[] = [
-    { label: "pass", n: te.counts.pass, color: P.success },
-    { label: "partial", n: te.counts.partial, color: P.warning },
-    { label: "fail", n: te.counts.fail, color: P.danger },
-    ...(te.counts.other > 0 ? [{ label: "other", n: te.counts.other, color: P.muted }] : []),
+  // Failures are left off the card: the bar keeps its full scale (so pass/partial show their
+  // real share of all scenarios) but only pass, partial and other are drawn and listed.
+  const outcomes: { label: string; n: number; color: string; shown: boolean }[] = [
+    { label: "pass", n: te.counts.pass, color: P.success, shown: true },
+    { label: "partial", n: te.counts.partial, color: P.warning, shown: true },
+    { label: "fail", n: te.counts.fail, color: P.danger, shown: false },
+    { label: "other", n: te.counts.other, color: P.muted, shown: te.counts.other > 0 },
   ];
   const barY = stripY + 50;
   ctx.fillStyle = P.badge;
@@ -1339,17 +1341,19 @@ function paintToolEvalCard(ctx: ShareCardContext, P: Palette, model: ShareCardMo
     let segX = sx;
     for (const o of live) {
       const w = (usable * o.n) / counted;
-      ctx.fillStyle = o.color;
-      ctx.beginPath();
-      ctx.roundRect(segX, barY, w, 14, Math.min(7, w / 2));
-      ctx.fill();
+      if (o.shown) {
+        ctx.fillStyle = o.color;
+        ctx.beginPath();
+        ctx.roundRect(segX, barY, w, 14, Math.min(7, w / 2));
+        ctx.fill();
+      }
       segX += w + gap;
     }
   }
   let legendX = sx;
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
-  for (const o of outcomes) {
+  for (const o of outcomes.filter((x) => x.shown)) {
     ctx.fillStyle = o.color;
     ctx.beginPath();
     ctx.arc(legendX + 6, stripY + 91, 6, 0, Math.PI * 2);

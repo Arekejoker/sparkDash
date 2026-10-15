@@ -661,6 +661,9 @@ describe("tool eval share card", () => {
       expect(ctx.texts).toContain(t);
     }
     expect(ctx.texts).toContain("pass");
+    expect(ctx.texts).toContain("partial");
+    // Failures are kept off the card.
+    expect(ctx.texts).not.toContain("fail");
     expect(shareCardHeight(m)).toBeGreaterThanOrEqual(SHARE_CARD_MIN_HEIGHT);
     const tile = m.toolEval!.categories[0];
     const sixteen = { ...m, toolEval: { ...m.toolEval!, categories: Array.from({ length: 16 }, () => tile) } };
