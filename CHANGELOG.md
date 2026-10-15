@@ -9,7 +9,13 @@ Format: version sections are listed newest first.
 
 ## [Unreleased]
 
+---
+
+## [2.50.0] — 2026-10-15
+
 ### Added
+- **Tool Eval: Show card.** A finished Tool Eval Bench result has a **Show card** button that renders it as a share image, the same kind the decode, prefill and quality benchmarks make: final score ring and rating, deployability and responsiveness, the pass / partial split, safety warnings when there are any, and a tile per category. The window offers **Copy image** (HTTPS or localhost), **Download PNG**, and right-click → Copy Image elsewhere. Failed scenarios are left off the card.
+- **Tool Eval: comparison card.** Tick two runs in History and **Show comparison card** turns the comparison into an image: both scores and the change, metric tiles (deployability, responsiveness, scenarios passed, how many scenarios got better or worse), and every category with both bars and the change in points. It says when the two runs were not set up the same way.
 - **GPU clock cap asks for the sudo password when the unit has no passwordless sudo.** The password is sent once to the unit's `sudo -S` over stdin, never stored or logged, and only accepted over https or from the machine itself; three wrong ones lock that account for five minutes.
 - **GPU clock cap: run it on the Spark yourself.** Edit unit → GPU clock cap has a *Run it on the Spark yourself* panel that gives a command to paste into a terminal on the Spark. It uses plain `sudo`, so it asks for the password there, and prints the result in plain words. Use it when the dashboard has no passwordless sudo on a unit.
 - **GPU clock cap from Edit unit.** Spark units get a **GPU clock cap** section (Linux Spark units only): cap the graphics clock with `nvidia-smi -lgc 0,MAX`, optionally **keep it after reboot** with a systemd service (`spark-gpu-clock-limit.service`, the unit sparkLimiter installs), or remove it again. It shows the cap in effect and the GPU maximum, and the value appears on the unit's card and GPU panel. Runs as root locally and through `sudo -n` over SSH, so the SSH user needs passwordless sudo; nothing changes without it. API: `GET|PUT|DELETE /api/sparks/:id/gpu-clock`.

@@ -66,6 +66,11 @@ Monitored units run **Linux**, **macOS**, or **Windows** (a Windows PC with an N
 
 ## Latest version changelog
 
+### Version 2.50.0
+- **Tool Eval Bench: Show card** turns a finished result into a share image (score, rating, outcomes, safety warnings, categories) you can copy or save as a PNG.
+- **Tool Eval Bench: comparison card**: tick two runs in History and get one image of the change between them.
+- **GPU clock cap** can be run on the Spark yourself, or the dashboard asks for the sudo password when a unit has no passwordless sudo.
+
 ### Version 2.40.1
 - **Temps page** with day and week GPU temperature graphs for every unit, backed by a minute-resolution history kept for 7 days.
 - **GPU clock cap** set with `nvidia-smi -lgc` shows on each unit (read-only).
