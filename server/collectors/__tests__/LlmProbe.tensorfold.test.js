@@ -338,6 +338,29 @@ test("probe: newer TensorFold (live rates in /health, totals on /metrics) → re
   assert.equal(snap.mtpAcceptanceRate, 0.7);
 });
 
+test("probe: a decode rate reported in /health is not replaced by the /metrics counter diff", async () => {
+  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 8888);
+  const health = { status: "ok", max_batch_size: 4, live: { connections: 1, waiting: 0, decode_tokens_per_second: 33.5 } };
+  let total = 1000;
+  probe._fetch = async (url) => {
+    const u = String(url);
+    if (u.endsWith("/slots")) return notFound();
+    if (u.endsWith("/v1/models")) return jsonRes(CUDA_MODELS);
+    if (u.endsWith("/health")) return jsonRes(health);
+    if (u.endsWith("/metrics")) {
+      const txt = `tensorfold:generation_tokens_total ${total}\ntensorfold:generation_tokens_running 0\ntensorfold:prompt_tokens_total 10`;
+      return { ok: true, status: 200, text: async () => txt, json: async () => ({}) };
+    }
+    return notFound();
+  };
+  await probe.probe();
+  total = 5000;
+  probe.lastProbeTime = Date.now() - 2000;
+  const snap = await probe.probe();
+  assert.equal(snap.totalOutputTokens, 5000);
+  assert.equal(snap.generationTps, 33.5);
+});
+
 test("probe: TensorFold with cumulative counters in /health does not touch /metrics", async () => {
   const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 8888);
   const seen = [];

@@ -788,7 +788,12 @@ export class LlmProbe {
           this._applyTensorFoldLive(health);
           // Newer builds report live rates in /health but cumulative totals only on Prometheus /metrics.
           const totalRaw = health?.completion_tokens_total;
-          if (totalRaw == null || !Number.isFinite(Number(totalRaw))) await this._applyTensorFoldMetrics(dtSec);
+          if (totalRaw == null || !Number.isFinite(Number(totalRaw))) {
+            // A decode rate the server reports itself wins over the /metrics counter diff.
+            const liveDecode = health?.live?.decode_tokens_per_second;
+            const hasLiveDecode = liveDecode != null && Number.isFinite(Number(liveDecode));
+            await this._applyTensorFoldMetrics(hasLiveDecode ? undefined : dtSec);
+          }
         } else {
           this._applyTensorFoldHealth(null, dtSec);
         }

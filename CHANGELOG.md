@@ -11,6 +11,7 @@ Format: version sections are listed newest first.
 
 ### Fixed
 - **Dialogs no longer close when a text selection ends outside them.** Dragging to select text in a field and releasing the mouse on the dark overlay used to close Add Spark, Settings and the other dialogs, losing what was typed. The overlay now closes only when the press also started on it (one shared `useOverlayClose` hook). Reported in #224.
+- **TensorFold engines that report only through `/metrics` showed 0 tok/s.** Builds whose `/health` is just `{"status": "ok"}` (the `tensorfold-native` Zig engine) publish every counter on Prometheus `/metrics`. sparkDash copied the token totals from there but never turned them into a rate, so the Decode tile read 0 tok/s even mid-generation. Decode tok/s now comes from the poll-window diff of `generation_tokens_total` + `generation_tokens_running`: the total moves only when a request finishes, the running gauge counts the tokens of requests still decoding, so their sum grows while tokens are produced. A request finishing can show one short dip and spike, as the two counters are not updated in the same instant; the pair averages out. Prefill is unchanged, since `prompt_tokens_total` includes cached prefix tokens. From a contribution by @yrjo.
 
 ---
 
@@ -24,9 +25,6 @@ Format: version sections are listed newest first.
 - **GPU clock cap from Edit unit.** Spark units get a **GPU clock cap** section (Linux Spark units only): cap the graphics clock with `nvidia-smi -lgc 0,MAX`, optionally **keep it after reboot** with a systemd service (`spark-gpu-clock-limit.service`, the unit sparkLimiter installs), or remove it again. It shows the cap in effect and the GPU maximum, and the value appears on the unit's card and GPU panel. Runs as root locally and through `sudo -n` over SSH, so the SSH user needs passwordless sudo; nothing changes without it. API: `GET|PUT|DELETE /api/sparks/:id/gpu-clock`.
 
 ---
-
-### Fixed
-- **TensorFold engines that report only through `/metrics` showed 0 tok/s.** Builds whose `/health` is just `{"status": "ok"}` (the `tensorfold-native` Zig engine) publish every counter on Prometheus `/metrics`. sparkDash copied the token totals from there but never turned them into a rate, so the Decode tile read 0 tok/s even mid-generation. Decode tok/s now comes from the poll-window diff of `generation_tokens_total` + `generation_tokens_running`: the total moves only when a request finishes, the running gauge counts the tokens of requests still decoding, so their sum grows while tokens are produced. A request finishing can show one short dip and spike, as the two counters are not updated in the same instant; the pair averages out. Prefill is unchanged, since `prompt_tokens_total` includes cached prefix tokens. From a contribution by @yrjo.
 
 ## [2.40.1] — 2026-10-14
 
