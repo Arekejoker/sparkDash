@@ -318,22 +318,54 @@ test("probe script: vram_mm under another tile directory is found", () => {
   }
 });
 
-test("probe script: sudo reads a non-tile0 file in one call", () => {
+// A stand-in for sudo that logs each call and answers only for one named file, like a sudoers rule would.
+function pinnedSudoDir(allowedSuffix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "intel-sudo-"));
+  fs.writeFileSync(
+    path.join(dir, "sudo"),
+    `#!/bin/sh\nprintf "%s\\n" "$*" >> "${dir}/calls"\ncase "$*" in "-n cat "*${allowedSuffix}) printf "size: 8589934592\\nusage: 1073741824\\n";; *) exit 1;; esac\n`,
+    { mode: 0o755 }
+  );
+  return dir;
+}
+
+test("probe script: sudo is called once per exact file, never with several paths", () => {
   const root = buildTree();
-  const bin = fakeSudoDir();
+  const bin = pinnedSudoDir("tile2/vram_mm");
   try {
     const d = path.join(root, "sys/kernel/debug/dri/0000:3a:00.0");
     fs.renameSync(path.join(d, "tile0"), path.join(d, "tile2"));
-    fs.chmodSync(path.join(d, "tile2/vram_mm"), 0o000); // plain read fails, sudo stand-in runs as us
-    // the stand-in can not bypass modes, so only check the call shape and that sudo ran once
+    fs.chmodSync(path.join(d, "tile2/vram_mm"), 0o000); // plain read fails, the stand-in answers for tile2
     const out = execFileSync("sh", ["-c", INTEL_PROBE_SCRIPT], {
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, INTEL_PROBE_ROOT: root },
       encoding: "utf8",
     });
     const calls = sudoCalls(bin);
-    assert.equal(calls.length, 1);
-    assert.match(calls[0], /^-n cat .*tile0\/vram_mm .*tile1\/vram_mm .*tile2\/vram_mm .*tile3\/vram_mm$/);
-    assert.ok(typeof out === "string");
+    assert.equal(calls.length, 3, "tile0, tile1, then tile2 answers");
+    calls.forEach((c, n) => assert.equal(c, `-n cat ${d}/tile${n}/vram_mm`));
+    const [card] = parseIntelProbe(out);
+    assert.equal(card.vramSizeBytes, 8589934592);
+    assert.equal(card.vramUsageBytes, 1073741824);
+    assert.equal(card.sudoFailed, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test("probe script: when no file answers through sudo every call is still a single exact path and the card reports sudofail", () => {
+  const root = buildTree();
+  const bin = pinnedSudoDir("nothing-matches");
+  try {
+    const d = path.join(root, "sys/kernel/debug/dri/0000:3a:00.0");
+    fs.chmodSync(path.join(d, "tile0/vram_mm"), 0o000);
+    const out = execFileSync("sh", ["-c", INTEL_PROBE_SCRIPT], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, INTEL_PROBE_ROOT: root },
+      encoding: "utf8",
+    });
+    const calls = sudoCalls(bin);
+    assert.deepEqual(calls, [0, 1, 2, 3].map((n) => `-n cat ${d}/tile${n}/vram_mm`));
+    assert.equal(parseIntelProbe(out)[0].sudoFailed, true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(bin, { recursive: true, force: true });

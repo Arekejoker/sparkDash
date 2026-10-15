@@ -48,6 +48,7 @@ Monitored units run **Linux**, **macOS**, or **Windows** (a Windows PC with an N
 - [Prometheus](#prometheus)
 - [Alert notifications](#alert-notifications)
 - [RoCE / RDMA monitoring](#roce--rdma-monitoring)
+- [Intel Arc GPUs](#intel-arc-gpus)
 - [Windows PCs](#windows-pcs)
 - [Full changelog](./CHANGELOG.md)
 - [Quick start](#quick-start)
@@ -588,6 +589,28 @@ Two health findings use it: **a RoCE link went down** (a port that was up, criti
 
 ---
 
+## Intel Arc GPUs
+
+Discrete Intel GPUs bound to the Linux `xe` driver show up in the GPU panel next to NVIDIA and AMD cards, locally and on SSH units. Everything is read from sysfs and hwmon, with no vendor tool: temperature, fan, clock and power cap directly; power in watts from the card's energy counter (a delta between polls); usage from the GT idle residency. Integrated GPUs (PCI bus 00) and `i915` cards are not read. Intel cards have their own index range (2000 and up) and `vendor: "intel"`.
+
+**VRAM.** Exact VRAM use lives in root-only debugfs (`/sys/kernel/debug/dri/<pci-address>/tile<N>/vram_mm`). Reading it is **off by default**: with **Settings → Intel Arc VRAM via sudo** off, no `sudo` runs on any host and the card shows its PCI BAR size as the total (`vramSource: "pci-bar"`, usage unknown). When it is on, the probe runs `sudo -n cat <exact path>` for `tile0` first and then `tile1` to `tile3`, one path per call, and the first file that answers wins. The result is cached for 45 seconds, and a host where `sudo -n` fails is not asked again for 10 minutes, so neither case floods the host's auth log.
+
+**The sudoers rule.** Grant the SSH user that one command on the exact files and nothing wider. A bare `cat` grant (or `ALL`) would let that user read any file as root. Pin each card's debugfs files by its PCI address (`lspci -D | grep -i -E 'vga|display'`, for example `0000:3a:00.0`):
+
+```
+# /etc/sudoers.d/sparkdash-intel-vram   (edit with: sudo visudo -f /etc/sudoers.d/sparkdash-intel-vram)
+Cmnd_Alias SPARKDASH_INTEL_VRAM = \
+    /usr/bin/cat /sys/kernel/debug/dri/0000\:3a\:00.0/tile0/vram_mm, \
+    /usr/bin/cat /sys/kernel/debug/dri/0000\:3a\:00.0/tile1/vram_mm, \
+    /usr/bin/cat /sys/kernel/debug/dri/0000\:3a\:00.0/tile2/vram_mm, \
+    /usr/bin/cat /sys/kernel/debug/dri/0000\:3a\:00.0/tile3/vram_mm
+sparky ALL=(root) NOPASSWD: SPARKDASH_INTEL_VRAM
+```
+
+Use the full path of `cat` that `command -v cat` prints for that user (`/usr/bin/cat` or `/bin/cat`; they are the same file on merged-`/usr` systems) and escape the colons of the PCI address with a backslash, as above. Do not use `*` in the paths: in sudoers a wildcard also matches spaces and `/`, so `.../dri/*/tile0/vram_mm` would also allow `cat` of other files. On sudo 1.9.10 or newer a regular expression pins the same set: `/usr/bin/cat ^/sys/kernel/debug/dri/[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]/tile[0-3]/vram_mm$`. Check the rule with `sudo -n cat /sys/kernel/debug/dri/<pci-address>/tile0/vram_mm` as that user. The local unit (the container with `pid: host`) runs as root and needs no rule.
+
+**Health.** Intel cards are shown and counted in the power and VRAM totals but are not judged by the NVIDIA-tuned health thresholds. If `nvidia-smi` is installed but returns no devices on a host that has an Intel card, the GPU collection is reported as failed (the Intel card is still shown), so a broken NVIDIA driver does not look healthy; a host with no `nvidia-smi` at all is treated as Intel-only.
+
 ## Windows PCs
 
 A Windows PC with an NVIDIA GPU can be monitored with no agent. On the PC:
@@ -924,6 +947,7 @@ Gear icon in the header, or `GET`/`PUT` `/api/settings`:
 | Show search and status filters | false | Overview search field and status dropdown |
 | Save benchmark debug traces | false | Store prompts, HTTP ids and GPU samples in bench history (larger files) |
 | Prometheus metrics | false | Serve `GET /metrics` for Prometheus / Grafana (see [Prometheus](#prometheus)); `404` while off |
+| Intel Arc VRAM via sudo (`intelVramSudo`) | false | Read exact Intel Arc VRAM use through `sudo -n cat` on pinned debugfs files (see [Intel Arc GPUs](#intel-arc-gpus)); off shows the PCI BAR size and runs no sudo |
 | Metrics history (`metricsHistory`) | false | Keep 48 h of 1-minute and 30 days of 15-minute history per unit (GPU, memory headroom, CPU, RAM, network, LLM tok/s and KV) and show it in a History panel at the bottom of each unit's page (also `GET /api/sparks/:id/history`). The panel polls every 30 s only while it is on screen. Readings are gaps, not zeros, while a unit is offline or a collection is failed or older than 3 × the poll interval (at least 15 s). Stored in `config/metrics-history.json` (at most ~1 MB per unit, +~0.3 MB per LLM port), saved every 5 min and on shutdown; nothing is recorded or written while off |
 | Alert notifications (`alertsEnabled`) | false | Notify ntfy / Discord / Slack / a webhook about Health findings and Overview exceptions (see [Alert notifications](#alert-notifications)); while off nothing is evaluated or sent |
 

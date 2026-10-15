@@ -23,7 +23,9 @@ const MIN_SAMPLE_GAP_SEC = 0.5;
  * Every read tolerates a missing file, and the script ends with `true` so a
  * missing card or a denied sudo never fails the surrounding SSH command.
  * VRAM size/usage come from root-only debugfs: plain read, then `sudo -n`
- * unless INTEL_SUDO=0. The file is expected at `dri/<pci>/tile0/vram_mm`, but
+ * unless INTEL_SUDO=0. The sudo read is one `sudo -n cat <exact path>` per
+ * file (tile0 first, the first file that answers wins), so a sudoers rule can
+ * name exactly the files it allows; see the README ("Intel Arc GPUs"). The file is expected at `dri/<pci>/tile0/vram_mm`, but
  * that path is not confirmed on hardware, so every tile directory is tried
  * (the first size/usage pair wins) and a missing or differently shaped file
  * just leaves the card on its PCI BAR size. INTEL_VRAM=0 skips the debugfs
@@ -60,7 +62,10 @@ export const INTEL_PROBE_SCRIPT = [
   '  o=""',
   '  if [ "${INTEL_VRAM:-1}" = 1 ]; then',
   '    o=$(cat "$v"/tile*/vram_mm 2>/dev/null)',
-  '    if [ -z "$o" ] && [ "${INTEL_SUDO:-1}" = 1 ]; then o=$(sudo -n cat "$v/tile0/vram_mm" "$v/tile1/vram_mm" "$v/tile2/vram_mm" "$v/tile3/vram_mm" 2>/dev/null); [ -n "$o" ] || echo "sudofail 1"; fi',
+  '    if [ -z "$o" ] && [ "${INTEL_SUDO:-1}" = 1 ]; then',
+  '      for t in 0 1 2 3; do o=$(sudo -n cat "$v/tile$t/vram_mm" 2>/dev/null); [ -z "$o" ] || break; done',
+  '      [ -n "$o" ] || echo "sudofail 1"',
+  "    fi",
   "  fi",
   '  [ -z "$o" ] || printf "%s\\n" "$o" | grep -E "^ *(size|usage):" | head -2 | sed "s/^ */vram /"',
   "done; true",
