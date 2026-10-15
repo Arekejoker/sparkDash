@@ -124,11 +124,14 @@ export function extractSample(snapshot, isFresh = () => true) {
   }
 
   if (Array.isArray(m.llm) && isFresh("llm")) {
-    // metrics.llm is index-aligned with llmPorts (same zip as the browser's metricsStore).
+    // Match an entry to its port by the port it carries. After a port is added, removed or
+    // reordered, metrics.llm keeps its old order until the next LLM poll, so position alone
+    // would record one endpoint's rates under another's port. Entries without a port fall back
+    // to their position in llmPorts.
     const ports = Array.isArray(snapshot.llmPorts) ? snapshot.llmPorts : [];
     m.llm.forEach((entry, i) => {
-      const port = ports[i];
-      if (!Number.isInteger(port) || entry?.available !== true) return;
+      const port = Number.isInteger(entry?.port) ? entry.port : ports[i];
+      if (!Number.isInteger(port) || !ports.includes(port) || entry?.available !== true) return;
       set(llmKey(port, "genTps"), entry.generationTps);
       set(llmKey(port, "prefillTps"), entry.prefillTps);
       if (finite(entry.kvCacheUsage)) {

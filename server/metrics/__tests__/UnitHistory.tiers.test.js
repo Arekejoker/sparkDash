@@ -82,6 +82,20 @@ test("extractSample reads every series from a GB10 snapshot", () => {
   });
 });
 
+test("extractSample matches LLM readings to ports by the port they carry, not by position", () => {
+  // Ports were reordered and one removed; metrics.llm still has the old order until the next poll.
+  const snap = gb10Snapshot({ llmPorts: [9000, 8888] });
+  snap.metrics.llm = [
+    { port: 8888, available: true, generationTps: 10, prefillTps: 20 },
+    { port: 7777, available: true, generationTps: 99, prefillTps: 99 },
+    { port: 9000, available: true, generationTps: 30, prefillTps: 40 },
+  ];
+  const v = extractSample(snap);
+  assert.equal(v[llmKey(8888, "genTps")], 10);
+  assert.equal(v[llmKey(9000, "genTps")], 30);
+  assert.equal(v[llmKey(7777, "genTps")], undefined, "a port the unit no longer has");
+});
+
 test("an offline unit is a gap, not zeros", () => {
   assert.equal(extractSample(gb10Snapshot({ online: false })), null);
 });
