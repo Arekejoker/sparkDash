@@ -168,6 +168,9 @@ function largestBarBytes(rows) {
   return best || null;
 }
 
+/** Domain:bus:device.function, e.g. 0000:3a:00.0 (the domain may be wider than 4 digits). */
+const PCI_ADDRESS = /^[0-9a-f]{4,8}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$/i;
+
 /** Parse the probe output into raw per-card readings (sysfs units). */
 export function parseIntelProbe(output) {
   const cards = [];
@@ -177,6 +180,12 @@ export function parseIntelProbe(output) {
     if (!m) continue;
     const [, key, rest] = m;
     if (key === "@xe") {
+      // The address comes from the host (or, over SSH, from whatever answered): only a real PCI
+      // address is accepted, and the lines under any other header are ignored.
+      if (!PCI_ADDRESS.test(rest.trim())) {
+        cur = null;
+        continue;
+      }
       cur = {
         pci: rest.trim(), deviceId: null, uptimeSec: null, capUw: null, critUw: null, fanRpm: null,
         energyUj: {}, temps: {}, freqMHz: null, freqMaxMHz: null, idleMs: null,

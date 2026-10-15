@@ -401,3 +401,12 @@ test("IntelVramCache: a read that returns nothing is not cached; a new card forc
   assert.equal(fresh.vramSizeBytes, null);
   assert.equal(cache.stale, true);
 });
+
+test("parseIntelProbe: a header that is not a PCI address is dropped with its lines", () => {
+  const bad = ["@xe ../../etc/passwd", "id 0xe223", "cap 200000000", "@xe $(reboot)", "id 0xe223", "@xe 0000:3a:00.0 extra", "id 0xe223", "@xe", "id 0xe223"].join("\n");
+  assert.deepEqual(parseIntelProbe(bad), []);
+  const mixed = `${bad}\n@xe 0000:3b:00.0\nid 0xe223\nfan 900\n@xe 00000000:3c:00.1\nid 0xe223`;
+  const cards = parseIntelProbe(mixed);
+  assert.deepEqual(cards.map((c) => c.pci), ["0000:3b:00.0", "00000000:3c:00.1"]);
+  assert.equal(cards[0].fanRpm, 900);
+});
