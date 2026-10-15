@@ -9,6 +9,9 @@ Format: version sections are listed newest first.
 
 ## [Unreleased]
 
+### Added
+- **Back to Overview on each unit page.** The unit page header has a small **← Overview** link above the unit name, for when the sidebar is collapsed or hidden on a narrow screen. Thanks to @yr75myjnqx-tech (#221).
+
 ### Fixed
 - **No phantom `Cap 0.1 GHz` chip on units without a clock cap.** With no cap marker the probe output is only the boot id, and a boot id that starts with digits (for example `139dcc9e-…`) was read as a cap of 139 MHz. The marker line's first token now has to be a whole number. Thanks to @yr75myjnqx-tech (#219).
 - **Dialogs no longer close when a text selection ends outside them.** Dragging to select text in a field and releasing the mouse on the dark overlay used to close Add Spark, Settings and the other dialogs, losing what was typed. The overlay now closes only when the press also started on it (one shared `useOverlayClose` hook). Reported in #224.
