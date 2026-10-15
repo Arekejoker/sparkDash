@@ -8,6 +8,7 @@ import {
   buildDecodeShareCard,
   buildPrefillShareCard,
   buildQualityShareCard,
+  buildToolEvalShareCard,
   detectShareCardTheme,
   paintShareCard,
   shareCardBarFractions,
@@ -21,6 +22,7 @@ import {
 } from "./benchShareCard";
 import { copyCardImage, copyTextOnly, renderShareCardPng } from "./shareImage";
 import { backendLabel } from "../../shared/llmBackends.js";
+import { normalizeToolResult } from "../bench/tooleval/normalize";
 
 /** Minimal decode result factory — only the fields the card reads. */
 function decodeResult(over: Partial<DecodeBenchJob["results"][number]> = {}) {
@@ -583,5 +585,96 @@ describe("quality share card", () => {
     expect(shareCardHeight(bigger)).toBeGreaterThan(shareCardHeight(m));
     const P = { success: "g", accent: "a", danger: "r", muted: "m" };
     expect([95, 90, 89.9, 70, 69.9, null].map((v) => qualityTierColor(P, v))).toEqual(["g", "g", "a", "a", "r", "m"]);
+  });
+});
+
+describe("tool eval share card", () => {
+  const result = (over: Record<string, unknown> = {}) =>
+    normalizeToolResult({
+      final_score: 82.46,
+      rating: "★★★★ Good",
+      deployability: 78.2,
+      responsiveness: 91,
+      total_scenarios: 4,
+      tool_eval_bench_version: "1.4.0",
+      config: { model: "org/model", backend: "vllm" },
+      scores: {
+        category_scores: [
+          { category: "A", points: 9, max_points: 10 },
+          { category: "B", percent: 20, name: "Params" },
+        ],
+        scenario_results: [
+          { scenario_id: "TC-01", status: "pass", category: "A" },
+          { scenario_id: "TC-02", status: "pass", category: "A" },
+          { scenario_id: "TC-03", status: "partial", category: "B" },
+          { scenario_id: "TC-04", status: "fail", category: "B" },
+        ],
+      },
+      ...over,
+    })!;
+  const run = { status: "completed" as const, startedAt: 1_000, finishedAt: 125_000, model: null };
+
+  it("carries the headline numbers, the outcome split and a tile per category", () => {
+    const m = buildToolEvalShareCard(result(), run, { sparkName: "spark-38bd" }, Date.UTC(2026, 8, 17, 12));
+    const te = m.toolEval!;
+    expect([m.title, m.host, m.status.label]).toEqual(["Tool Eval Bench", "spark-38bd", "COMPLETED"]);
+    expect([te.score, te.rating, te.stars, te.modelName]).toEqual([82.46, "Good", 4, "org/model"]);
+    expect(te.subline).toBe("vLLM · tool-eval-bench 1.4.0");
+    expect(te.stats.map((s) => [s.label, s.value, s.suffix])).toEqual([
+      ["Deployability", "78.2", "/100"],
+      ["Responsiveness", "91.0", "/100"],
+    ]);
+    expect(te.counts).toEqual({ pass: 2, partial: 1, fail: 1, other: 0, total: 4 });
+    expect(te.summary).toBe("4 scenarios · 2m 4s");
+    expect(te.categories).toEqual([
+      { id: "A", name: "Tool selection", pct: 90, detail: "9/10 pts" },
+      { id: "B", name: "Params", pct: 20, detail: "" },
+    ]);
+    expect(shareCardFileName(m, "tool-eval")).toBe("sparkdash-tool-eval-spark-38bd-2026-09-17.png");
+  });
+
+  it("falls back to the score tier and the run's model when the result has no rating or model", () => {
+    const r = result({ rating: undefined, config: {} });
+    const m = buildToolEvalShareCard(r, { ...run, model: "from-run" }, {}, 0);
+    expect([m.toolEval!.rating, m.toolEval!.stars, m.toolEval!.modelName]).toEqual(["Good", 4, "from-run"]);
+  });
+
+  it("flags safety warnings on the card, listing only the first few", () => {
+    const warnings = ["w1", "w2", "w3", "w4", "w5"];
+    const m = buildToolEvalShareCard(result({ safety_warnings: warnings }), run, {}, 0);
+    expect(m.toolEval!.safety).toEqual(["w1", "w2", "w3"]);
+    expect(m.toolEval!.safetyTotal).toBe(5);
+    expect(m.toolEval!.tone).toBe("warn");
+    expect(m.chips.map((c) => c.label)).toContain("5 safety warnings");
+    const ctx = fakeContext();
+    paintShareCard(ctx, m, "dark");
+    expect(ctx.texts.some((t) => t.startsWith("SAFETY WARNINGS (5)"))).toBe(true);
+    expect(ctx.texts).toContain("+2 more");
+    expect(shareCardHeight(m)).toBeGreaterThan(shareCardHeight(buildToolEvalShareCard(result(), run, {}, 0)));
+  });
+
+  it("paints the score, the stat tiles and the categories, and grows with the category count", () => {
+    const m = buildToolEvalShareCard(result(), run, { sparkName: "s" }, 0);
+    const ctx = fakeContext();
+    paintShareCard(ctx, m, "light");
+    for (const t of ["Tool Eval Bench", "82.5", "Good", "org/model", "78.2", "91.0", "Tool selection", "Params", "90", "20"]) {
+      expect(ctx.texts).toContain(t);
+    }
+    expect(ctx.texts).toContain("pass");
+    expect(shareCardHeight(m)).toBeGreaterThanOrEqual(SHARE_CARD_MIN_HEIGHT);
+    const tile = m.toolEval!.categories[0];
+    const sixteen = { ...m, toolEval: { ...m.toolEval!, categories: Array.from({ length: 16 }, () => tile) } };
+    expect(shareCardHeight(sixteen)).toBeGreaterThan(shareCardHeight(m));
+  });
+
+  it("copes with a result that has no score, no categories and no model", () => {
+    const r = normalizeToolResult({ scores: { scenario_results: [{ scenario_id: "x", status: "pass" }] } })!;
+    const m = buildToolEvalShareCard(r, { ...run, finishedAt: null }, {}, 0);
+    expect(m.toolEval!.score).toBeNull();
+    expect(m.toolEval!.summary).toBe("1 scenario");
+    const ctx = fakeContext();
+    expect(() => paintShareCard(ctx, m, "dark")).not.toThrow();
+    expect(ctx.texts).toContain("—");
+    expect(ctx.texts).toContain("Unknown model");
   });
 });
