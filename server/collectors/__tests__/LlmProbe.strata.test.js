@@ -206,6 +206,29 @@ test("periodic health failure retains Strata instead of using its compatibility 
   assert.ok(!state.calls.some(({ path }) => path === "/slots"));
 });
 
+test("another server answering /health on the port replaces a remembered Strata", async () => {
+  const { probe, state } = setup();
+  await probe.probe();
+  assert.equal(probe.backendType, "strata");
+  state.health = { status: "ok" };
+  await probe._detectServerType();
+  assert.equal(probe.backendType, "llama.cpp");
+});
+
+test("an engine payload without max_context keeps the context from /v1/models", async () => {
+  const body = metrics();
+  delete body.engine.max_context;
+  const { probe } = setup(body);
+  const fetchOnce = probe._fetch;
+  probe._fetch = async (url, ...rest) =>
+    new URL(url).pathname === "/v1/models"
+      ? response({ data: [{ id: "fixture-model", max_model_len: 131072 }] })
+      : fetchOnce(url, ...rest);
+  const snap = await probe.probe();
+  assert.equal(snap.backend, "strata");
+  assert.equal(snap.contextLength, 131072);
+});
+
 test("unloaded engine clears activity and is not presented as a loaded idle model", async () => {
   const { probe } = setup(metrics({ state: "unloaded", tok_s: 999, prefill_tok_s_mean: 999 }));
   const snap = await probe.probe();

@@ -458,17 +458,26 @@ export class LlmProbe {
     // Strata deliberately provides llama.cpp-shaped /slots, but those slots
     // omit its live decode counters. Check the explicit fingerprint first.
     if (this.backendType == null || this.backendType === "llama.cpp" || this.backendType === "strata") {
+      let otherServer = false;
       try {
         const healthRes = await this._fetch(`${this.baseUrl}/health`);
-        if (healthRes.ok && (await healthRes.json())?.service === "strata") {
-          this.serverIsOpenAI = true;
-          this.backendType = "strata";
-          return;
+        if (healthRes.ok) {
+          const health = await healthRes.json();
+          if (health?.service === "strata") {
+            this.serverIsOpenAI = true;
+            this.backendType = "strata";
+            return;
+          }
+          // A JSON object that is not Strata's means another server took the port.
+          otherServer = health != null && typeof health === "object" && !Array.isArray(health);
         }
       } catch { /* continue with the other backend signatures */ }
       // A transient health failure must not demote a known Strata to its
       // compatibility shim. Repeated actual probe failures reset detection.
-      if (this.backendType === "strata") return;
+      if (this.backendType === "strata") {
+        if (!otherServer) return;
+        this.backendType = null;
+      }
     }
     // Skip the llama.cpp /slots probe once we've positively identified an
     // OpenAI-compatible backend. vLLM / sglang / ds4-server have no /slots,
@@ -1414,7 +1423,9 @@ export class LlmProbe {
     this.totalPromptTokens = nonnegative(totals.prompt_tokens);
     this.totalOutputTokens = nonnegative(totals.output_tokens) ?? 0;
     this.totalCachedTokens = nonnegative(totals.reused);
-    this.contextLength = nonnegative(data.engine.max_context) || null;
+    // Keep the /v1/models value when this payload carries no usable limit.
+    const maxContext = nonnegative(data.engine.max_context);
+    if (maxContext > 0) this.contextLength = maxContext;
     this.gpuMemoryUtilization = null;
     this.kvCacheUsage = null;
     this._clearEngineMemory();
