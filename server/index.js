@@ -1824,10 +1824,21 @@ app.get("/api/sparks/:id/llm/quality-bench", (req, res) => {
       ? parseInt(String(portRaw), 10)
       : null;
   const p = Number.isInteger(port) ? port : null;
+  // `port` picks the endpoint of the current run view; `historyPort` (a port, or
+  // "all") widens or narrows the saved-run list on its own so runs from other
+  // endpoints stay reachable for comparison. Without it, history follows `port`.
+  const hpRaw = req.query.historyPort;
+  let historyPort = p;
+  if (hpRaw === "all") historyPort = null;
+  else if (hpRaw != null && hpRaw !== "") {
+    const hp = parseInt(String(hpRaw), 10);
+    if (!Number.isInteger(hp)) return res.status(400).json({ error: "historyPort must be a port number or \"all\"" });
+    historyPort = hp;
+  }
   res.json({
     active: qualityBenchManager.getActive(spark.id),
     last: qualityBenchManager.getLast(spark.id, p),
-    history: qualityBenchManager.getHistorySummaries(spark.id, p),
+    history: qualityBenchManager.getHistorySummaries(spark.id, historyPort),
     defaults: QUALITY_BENCH_DEFAULTS,
   });
 });
