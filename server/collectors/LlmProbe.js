@@ -1475,11 +1475,6 @@ export class LlmProbe {
   }
 
   /**
-   * Apply stock vLLM Prometheus /metrics (tok/s + inference tiles).
-   * @param {string} txt
-   * @param {number} dtSec
-   */
-  /**
    * Radiance only advances vllm:{prompt,generation}_tokens_total when a request
    * finishes, so counter deltas read 0 during a request and then spike on the
    * poll it completes in. It also exports live engine-rate gauges; use them
@@ -1509,6 +1504,11 @@ export class LlmProbe {
     this.prefillActive = prefilling && (this.requestsRunning ?? 0) > 0;
   }
 
+  /**
+   * Apply stock vLLM Prometheus /metrics (tok/s + inference tiles).
+   * @param {string} txt
+   * @param {number} dtSec
+   */
   _applyVllmMetrics(txt, dtSec) {
     const promptTokens = this._getVllmMetric(txt, "prompt_tokens_total");
     const genTokens = this._getVllmMetric(txt, "generation_tokens_total");
