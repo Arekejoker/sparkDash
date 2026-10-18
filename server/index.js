@@ -53,7 +53,7 @@ import {
 } from "./llmtokens/LlmTokenRuntime.js";
 import { closeLlmStreamAgent } from "./collectors/LlmStreaming.js";
 import { compareSemver, getLatestRelease } from "./collectors/HermesReleases.js";
-import { ALERTS_JSON_PATH, FLEET_ENERGY_JSON_PATH, FLEET_ENERGY_MONTHLY_JSON_PATH, METRICS_HISTORY_JSON_PATH } from "./config.js";
+import { ALERTS_JSON_PATH, FLEET_ENERGY_JSON_PATH, FLEET_ENERGY_MONTHLY_JSON_PATH, MAX_ACTIVE_BENCH_JOBS, METRICS_HISTORY_JSON_PATH } from "./config.js";
 import { createAlertsRuntime, registerAlertRoutes } from "./alerts/runtime.js";
 import { FleetEnergyTracker } from "./energy/FleetEnergyTracker.js";
 import { EventLog } from "./events/EventLog.js";
@@ -256,7 +256,6 @@ const allowBench = createRateLimiter(20, 60_000);
 const allowGlobalDestructive = createRateLimiter(30, 60_000);
 /** Anti double-submit only; per-Spark mutex + MAX_ACTIVE_BENCH_JOBS cap load. */
 const benchCooldown = createRateLimiter(1, 3_000);
-const MAX_ACTIVE_BENCH_JOBS = 2;
 
 /** Running decode + prefill + quality jobs across all Sparks. */
 function activeBenchJobCount() {
@@ -273,7 +272,7 @@ function consumeBenchStartQuota(req, res) {
   // target resolution, so two concurrent requests could both have passed. This
   // runs synchronously right before the manager's start(), closing that window.
   if (activeBenchJobCount() >= MAX_ACTIVE_BENCH_JOBS) {
-    res.status(429).json({ error: "Global active benchmark cap reached; wait for a job to finish" });
+    res.status(429).json({ error: `Global active benchmark cap (${MAX_ACTIVE_BENCH_JOBS}) reached; wait for a job to finish` });
     return false;
   }
   const key = principalKey(req);
@@ -1426,7 +1425,7 @@ app.get("/api/sparks/:id/llm/daily", (req, res) => {
  */
 app.post("/api/sparks/:id/llm/bench", async (req, res) => {
   if (activeBenchJobCount() >= MAX_ACTIVE_BENCH_JOBS) {
-    return res.status(429).json({ error: "Global active benchmark cap reached; wait for a job to finish" });
+    return res.status(429).json({ error: `Global active benchmark cap (${MAX_ACTIVE_BENCH_JOBS}) reached; wait for a job to finish` });
   }
   const spark = registry.getSpark(req.params.id);
   if (!spark) return res.status(404).json({ error: "Spark not found" });
@@ -1602,7 +1601,7 @@ app.delete("/api/sparks/:id/llm/bench/:benchId", (req, res) => {
  */
 app.post("/api/sparks/:id/llm/prefill-bench", async (req, res) => {
   if (activeBenchJobCount() >= MAX_ACTIVE_BENCH_JOBS) {
-    return res.status(429).json({ error: "Global active benchmark cap reached; wait for a job to finish" });
+    return res.status(429).json({ error: `Global active benchmark cap (${MAX_ACTIVE_BENCH_JOBS}) reached; wait for a job to finish` });
   }
   const spark = registry.getSpark(req.params.id);
   if (!spark) return res.status(404).json({ error: "Spark not found" });
@@ -1742,7 +1741,7 @@ app.delete("/api/sparks/:id/llm/prefill-bench/:benchId", (req, res) => {
  */
 app.post("/api/sparks/:id/llm/quality-bench", async (req, res) => {
   if (activeBenchJobCount() >= MAX_ACTIVE_BENCH_JOBS) {
-    return res.status(429).json({ error: "Global active benchmark cap reached; wait for a job to finish" });
+    return res.status(429).json({ error: `Global active benchmark cap (${MAX_ACTIVE_BENCH_JOBS}) reached; wait for a job to finish` });
   }
   const spark = registry.getSpark(req.params.id);
   if (!spark) return res.status(404).json({ error: "Spark not found" });
