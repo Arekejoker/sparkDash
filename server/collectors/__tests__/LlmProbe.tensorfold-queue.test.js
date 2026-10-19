@@ -110,3 +110,20 @@ test("rich /health queue stays unknown when /metrics is unreachable", async () =
   const snap = await probe.probe();
   assert.equal(snap.requestsWaiting, null);
 });
+
+test("a queue count reported in /health live.waiting is not overwritten from /metrics", async () => {
+  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 8888);
+  const seen = [];
+  probe._fetch = async (url) => {
+    const u = String(url);
+    seen.push(u);
+    if (u.endsWith("/slots")) return notFound();
+    if (u.endsWith("/v1/models")) return jsonRes(GLM_MODELS);
+    if (u.endsWith("/health")) return jsonRes({ ...GLM_HEALTH, live: { waiting: 5 } });
+    if (u.endsWith("/metrics")) return textRes(GLM_METRICS);
+    return notFound();
+  };
+  const snap = await probe.probe();
+  assert.equal(snap.requestsWaiting, 5);
+  assert.equal(seen.some((u) => u.endsWith("/metrics")), false);
+});

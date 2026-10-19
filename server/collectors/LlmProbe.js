@@ -845,10 +845,11 @@ export class LlmProbe {
             const liveDecode = health?.live?.decode_tokens_per_second;
             const hasLiveDecode = liveDecode != null && Number.isFinite(Number(liveDecode));
             await this._applyTensorFoldMetrics(hasLiveDecode ? undefined : dtSec);
-          } else {
-            // A /health with token totals but no live block (TensorFold's Python engine) keeps its
-            // queue gauge in /metrics alone: poll it queue-only, so /health stays the authority
-            // for totals, rates, drafts and slots, and only the waiting gauge refreshes.
+          } else if (this.requestsWaiting == null) {
+            // A /health with token totals but no waiting count (TensorFold's Python engine) keeps
+            // its queue gauge in /metrics alone: poll it queue-only, so /health stays the authority
+            // for totals, rates, drafts and slots, and only the waiting gauge refreshes. A
+            // `live.waiting` the server reports itself is not overwritten.
             await this._applyTensorFoldMetrics(undefined, true);
           }
         } else {
