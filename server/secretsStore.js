@@ -120,6 +120,15 @@ function decrypt(blobB64, key) {
   return Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
 }
 
+/** Encrypt/decrypt helpers for sibling secret stores (eval model keys). */
+export function encryptSecret(plaintext) {
+  return encrypt(String(plaintext), resolveKey());
+}
+
+export function decryptSecret(blob) {
+  return decrypt(String(blob), resolveKey());
+}
+
 /**
  * @returns {{
  *   passwords: Map<string, string>,

@@ -1,5 +1,9 @@
 # sparkDash ⚡ — Multi-unit monitoring dashboard for NVIDIA DGX Spark
 
+> **DGX Spark custom branch:** AI mode, model eval and Simplified Chinese UI
+> additions live in this branch. See [DGX-SPARK.md](DGX-SPARK.md). Deployment
+> configuration and secrets are intentionally not included.
+
 <p align="center">
   <img src="https://img.shields.io/badge/platform-arm64-2d9d78?style=flat-square" alt="Platform: ARM64">
   <img src="https://img.shields.io/badge/React-19-58c4dc?style=flat-square&logo=react" alt="React 19">

@@ -3,6 +3,7 @@ import type { SparkSnapshot } from "../../api/types";
 import { isLlmMonitoringEnabled } from "../../api/sparkRole";
 import { updateSpark, refreshSparkMetric, addLlmPort, removeLlmPort } from "../../api/client";
 import { SparkHeader } from "./SparkHeader";
+import { AiModePanel } from "./AiModePanel";
 import { HealthList } from "../ui/HealthFindings";
 import { SparkActions } from "./SparkActions";
 import { GpuPanel } from "./GpuPanel";
@@ -258,6 +259,7 @@ export function SparkPage({
   return (
     <div className="sp">
       <SparkHeader spark={spark} onEdit={onEdit} onNavigate={onNavigate} />
+      {spark.isLocal && spark.role === "head" ? <AiModePanel /> : null}
       {/* Mobile-only action row (Update Hermes / Edit / Power) — desktop keeps them in the header. */}
       <SparkActions spark={spark} onEdit={onEdit} className="sp-mobile-actions flex sm:hidden" />
       {spark.online ? <HealthList findings={spark.health} /> : null}

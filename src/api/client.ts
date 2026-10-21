@@ -1,3 +1,25 @@
+import type { AiModeLogsResponse, AiModeStatus, AiModeSwitchResponse } from "./types";
+import type {
+  EvalImportCandidatesResponse,
+  EvalImportResponse,
+  EvalImportSelection,
+  EvalModel,
+  EvalModelInput,
+  EvalProbeResult,
+  EvalReportDetail,
+  EvalReportsResponse,
+  EvalScopeJob,
+  EvalScopeJobsResponse,
+  EvalServiceStatus,
+  GeminiDriverInfo,
+  GeminiTaskJob,
+  GeminiTasksResponse,
+  StartEvalScopeJobRequest,
+  SvgJob,
+  SvgJobsResponse,
+  SvgPair,
+  SvgParams,
+} from "./types";
 import type {
   AlertChannel,
   AlertTestResult,
@@ -1220,4 +1242,152 @@ export function deleteReaUpload(sparkId: string, uploadId: string): Promise<{ su
 /** The 48 h / 30 d unit history (Settings → Metrics history; `{ enabled: false }` while off). */
 export function getUnitHistory(sparkId: string, range: MetricsHistoryRange): Promise<MetricsHistoryResponse> {
   return apiFetch<MetricsHistoryResponse>(`/api/sparks/${encodeURIComponent(sparkId)}/history?range=${range}`);
+}
+
+// ─── ai-mode control ─────────────────────────────────────
+// Direct fetch, not apiFetch: a 401 here is the AI-mode token dialog's job, not
+// the dashboard-wide access-token prompt.
+async function aiModeFetch<T>(path: string, opts?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (opts?.body) headers["Content-Type"] = "application/json";
+  const res = await fetch(`${BASE}${path}`, {
+    ...opts,
+    headers: { ...headers, ...(opts?.headers as Record<string, string> | undefined) },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+/** Live `ai-mode status` summary (read-only). */
+export function fetchAiModeStatus(): Promise<AiModeStatus> {
+  return aiModeFetch("/api/ai-mode/status");
+}
+
+/** Start a switch to one of the configured ai-mode profiles (requires AUTH_TOKEN). */
+export function runAiModeAction(action: string, token: string): Promise<AiModeSwitchResponse> {
+  const [name, arg] = action.split(" ");
+  return aiModeFetch("/api/ai-mode", {
+    method: "POST",
+    body: JSON.stringify(arg ? { action: name, arg } : { action }),
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+/** Incremental log for the current/last ai-mode run. */
+export function fetchAiModeLogs(since = 0): Promise<AiModeLogsResponse> {
+  return aiModeFetch(`/api/ai-mode/logs?since=${since}`);
+}
+// ─── Model evaluation (EvalScope engine) ─────────────────
+/** Registered eval models (keys are never returned). */
+export function fetchEvalModels(): Promise<{ models: EvalModel[] }> {
+  return apiFetch("/api/eval/models");
+}
+
+export function addEvalModel(body: EvalModelInput): Promise<{ model: EvalModel }> {
+  return apiFetch("/api/eval/models", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateEvalModel(
+  id: string,
+  body: EvalModelInput
+): Promise<{ model: EvalModel }> {
+  return apiFetch(`/api/eval/models/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteEvalModel(id: string): Promise<{ success: boolean }> {
+  return apiFetch(`/api/eval/models/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** Connectivity probe (GET /models, chat fallback). */
+export function probeEvalModel(id: string): Promise<EvalProbeResult> {
+  return apiFetch(`/api/eval/models/${encodeURIComponent(id)}/probe`, { method: "POST" });
+}
+
+/** Candidate (provider, model) pairs from the local OpenCode install. */
+export function fetchEvalImportCandidates(): Promise<EvalImportCandidatesResponse> {
+  return apiFetch("/api/eval/models/import/opencode");
+}
+
+export function importEvalModels(
+  selections: EvalImportSelection[]
+): Promise<EvalImportResponse> {
+  return apiFetch("/api/eval/models/import/opencode", {
+    method: "POST",
+    body: JSON.stringify({ selections }),
+  });
+}
+
+/** Active + recent EvalScope jobs (eval/perf). */
+export function fetchEvalJobs(): Promise<EvalScopeJobsResponse> {
+  return apiFetch("/api/eval/jobs");
+}
+
+export function getEvalJob(jobId: string): Promise<EvalScopeJob> {
+  return apiFetch(`/api/eval/jobs/${encodeURIComponent(jobId)}`);
+}
+
+export function startEvalJob(body: StartEvalScopeJobRequest): Promise<EvalScopeJob> {
+  return apiFetch("/api/eval/jobs", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function cancelEvalJob(jobId: string): Promise<EvalScopeJob> {
+  return apiFetch(`/api/eval/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+}
+
+/** Parsed EvalScope reports found under the shared outputs root. */
+export function fetchEvalReports(): Promise<EvalReportsResponse> {
+  return apiFetch("/api/eval/reports");
+}
+
+export function fetchEvalReport(reportId: string): Promise<EvalReportDetail> {
+  return apiFetch(`/api/eval/reports/${encodeURIComponent(reportId)}`);
+}
+
+/** Health of the EvalScope web dashboard (link target). */
+export function fetchEvalService(): Promise<EvalServiceStatus> {
+  return apiFetch("/api/eval/service");
+}
+
+export function fetchSvgJobs(): Promise<import("./types").SvgJobsResponse> {
+  return apiFetch("/api/svg/jobs");
+}
+export function fetchSvgJob(id: string): Promise<import("./types").SvgJob> {
+  return apiFetch(`/api/svg/jobs/${encodeURIComponent(id)}`);
+}
+export function startSvgJob(body: import("./types").SvgParams & { modelIds: string[]; prompt: string }): Promise<import("./types").SvgJob> {
+  return apiFetch("/api/svg/jobs", { method: "POST", body: JSON.stringify(body) });
+}
+export function cancelSvgJob(id: string): Promise<import("./types").SvgJob> {
+  return apiFetch(`/api/svg/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+export function fetchSvgPair(id: string): Promise<import("./types").SvgPair> {
+  return apiFetch(`/api/svg/jobs/${encodeURIComponent(id)}/pair`, { method: "POST" });
+}
+export function voteSvgPair(token: string, winner: "a" | "b" | "tie"): Promise<{ a: string; b: string }> {
+  return apiFetch("/api/svg/votes", { method: "POST", body: JSON.stringify({ token, winner }) });
+}
+
+export function fetchGeminiDriver(): Promise<import("./types").GeminiDriverInfo> {
+  return apiFetch("/api/gemini/driver");
+}
+export function fetchGeminiTasks(): Promise<import("./types").GeminiTasksResponse> {
+  return apiFetch("/api/gemini/jobs");
+}
+export function fetchGeminiTask(id: string): Promise<import("./types").GeminiTaskJob> {
+  return apiFetch(`/api/gemini/jobs/${encodeURIComponent(id)}`);
+}
+export function startGeminiTask(body: { prompt: string; timeoutSeconds?: number }): Promise<import("./types").GeminiTaskJob> {
+  return apiFetch("/api/gemini/jobs", { method: "POST", body: JSON.stringify(body) });
+}
+export function cancelGeminiTask(id: string): Promise<import("./types").GeminiTaskJob> {
+  return apiFetch(`/api/gemini/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+export function refreshGeminiTask(id: string): Promise<import("./types").GeminiTaskJob> {
+  return apiFetch(`/api/gemini/jobs/${encodeURIComponent(id)}/refresh`, { method: "POST" });
 }

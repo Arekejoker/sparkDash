@@ -2303,3 +2303,306 @@ export class ReaApiError extends Error {
     this.canForce = canForce;
   }
 }
+
+// ─── ai-mode control ────────────────────────────────────
+export interface AiModeHealth {
+  deepseek: boolean;
+  deepseekVision: boolean;
+  qwen: boolean;
+  qwenFlash: boolean;
+  qwenFlashSingleLocal: boolean;
+  comfyui: boolean;
+  pixelle: boolean;
+  nemotron: boolean;
+  glm53: boolean;
+  ling: boolean;
+}
+
+export interface AiModeStatus {
+  success: boolean;
+  mode: string;
+  storedMode: string | null;
+  desiredMode: string | null;
+  actualMode: string | null;
+  transitionState: string;
+  lastError: string | null;
+  qwenError: string | null;
+  qwenFlashError: string | null;
+  qwenFlashSingleLocalError: string | null;
+  embeddingDesired: string;
+  embeddingActual: string;
+  glm53Decode: string;
+  health: AiModeHealth;
+  remoteSingle: {
+    up: boolean;
+    error: string | null;
+    clientUrl: string | null;
+    model: string;
+    workerBusyDualNode: boolean;
+  };
+  api: string | null;
+  model: string | null;
+  comfy: string | null;
+  embedding: string | null;
+  running: boolean;
+}
+
+export interface AiModeSwitchResponse {
+  success: boolean;
+  action: string;
+  runId?: number;
+  error?: string | null;
+}
+
+export interface AiModeLogsResponse {
+  runId: number | null;
+  logs: string[];
+  since: number;
+  done: boolean;
+  ok: boolean | null;
+  code: number | null;
+  error?: string | null;
+}
+// ─── Model evaluation (EvalScope engine) ─────────────────
+/** Wire protocol: Chat Completions (default) or the Responses API. */
+export type EvalModelApiType = "openai_chat" | "openai_responses";
+
+export interface EvalModel {
+  id: string;
+  label: string;
+  provider: string;
+  baseUrl: string;
+  model: string;
+  apiKeyEnv: string | null;
+  apiType: EvalModelApiType;
+  headers: Record<string, string>;
+  hasStoredKey: boolean;
+  hasEnvKey: boolean;
+  hasKey: boolean;
+  tokenizerPath: string | null;
+  proxy: string | null;
+  enabled: boolean;
+  notes: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface EvalModelInput {
+  id?: string;
+  label?: string;
+  provider?: string;
+  baseUrl: string;
+  model: string;
+  /** Write-only: stored encrypted server-side, never returned. */
+  apiKey?: string;
+  clearApiKey?: boolean;
+  apiType?: EvalModelApiType;
+  /** Non-secret routing headers required by some gateways. */
+  headers?: Record<string, string>;
+  apiKeyEnv?: string;
+  tokenizerPath?: string;
+  proxy?: string;
+  enabled?: boolean;
+  notes?: string;
+}
+
+export interface EvalProbeResult {
+  ok: boolean;
+  mode: "models" | "chat";
+  status: number;
+  latencyMs: number;
+  modelCount?: number;
+  modelSeen?: boolean;
+  error?: string;
+}
+
+export interface EvalImportProvider {
+  provider: string;
+  providerName: string;
+  baseUrl: string;
+  keySource: string;
+  apiKeyEnv?: string;
+  apiType?: EvalModelApiType;
+  headers?: Record<string, string>;
+  supported: boolean;
+  reason: string;
+  models: string[];
+}
+
+export interface EvalImportCandidatesResponse {
+  providers: EvalImportProvider[];
+}
+
+export interface EvalImportSelection {
+  provider: string;
+  model: string;
+}
+
+export interface EvalImportResponse {
+  created: EvalModel[];
+  skipped: { provider: string; model: string; reason: string }[];
+}
+
+export type EvalScopeJobKind = "eval" | "perf";
+export type EvalScopeJobStatus = "running" | "completed" | "failed" | "cancelled";
+
+export interface EvalScopeJobParams {
+  datasets: string[];
+  limit: number | null;
+  parallel: number[] | null;
+  number: number[] | null;
+  maxTokens: number | null;
+  minTokens: number | null;
+  dataset: string | null;
+  extraArgs: Record<string, unknown> | null;
+}
+
+export interface EvalScopeJob {
+  jobId: string;
+  kind: EvalScopeJobKind;
+  modelId: string;
+  modelLabel: string;
+  status: EvalScopeJobStatus;
+  startedAt: number;
+  completedAt: number | null;
+  durationMs: number;
+  exitCode: number | null;
+  error: string | null;
+  params: EvalScopeJobParams;
+  /** Redacted command (API key replaced with ***). */
+  commandPreview: string;
+  logPath: string | null;
+  logLines: number;
+  reportDir?: string | null;
+  /** Recent log lines; only present on single-job reads. */
+  logTail?: string[];
+}
+
+export interface EvalScopeJobsResponse {
+  active: EvalScopeJob | null;
+  jobs: EvalScopeJob[];
+  defaults: EvalScopeDefaults;
+}
+
+export interface EvalScopeDefaults {
+  datasetSuggestions: string[];
+  perfDatasetSuggestions: string[];
+  parallelSuggestions: number[];
+  defaultLimit: number;
+  defaultMaxTokens: number;
+  minTokens: number;
+}
+
+export interface StartEvalScopeJobRequest {
+  kind: EvalScopeJobKind;
+  modelId: string;
+  datasets?: string[];
+  limit?: number;
+  parallel?: number[];
+  number?: number[];
+  maxTokens?: number;
+  minTokens?: number;
+  dataset?: string;
+  extraArgs?: Record<string, unknown>;
+}
+
+export interface EvalPerfMetrics {
+  level: string;
+  concurrency: number | null;
+  total: number | null;
+  success: number | null;
+  failed: number | null;
+  rps: number | null;
+  latencyAvgS: number | null;
+  ttftAvgMs: number | null;
+  ttftP50Ms: number | null;
+  ttftP99Ms: number | null;
+  tpotMs: number | null;
+  itlMs: number | null;
+  outputTps: number | null;
+  totalTps: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+}
+
+export interface EvalReportDatasetScore {
+  name: string;
+  metric: string | null;
+  score: number | null;
+  num: number | null;
+  datasetId?: string | null;
+}
+
+export interface EvalReportSummary {
+  reportId: string;
+  kind: EvalScopeJobKind;
+  model: string;
+  modelId: string | null;
+  createdAt: number | null;
+  dir: string;
+  jobId: string | null;
+  datasetScores: EvalReportDatasetScore[];
+  overallScore: number | null;
+  perfLevels: EvalPerfMetrics[];
+}
+
+export interface EvalReportDetail extends EvalReportSummary {
+  /** Per-subset rows used by the detail table (eval reports). */
+  subsets: EvalReportDatasetScore[];
+  /** Raw parsed summary JSON (bounded). */
+  raw: unknown;
+}
+
+export interface EvalReportsResponse {
+  reports: EvalReportSummary[];
+}
+
+export interface EvalServiceStatus {
+  url: string;
+  up: boolean;
+  latencyMs: number | null;
+  error: string | null;
+}
+
+export interface SvgSample {
+  id: string; modelId: string; modelLabel: string; model: string; baseUrl: string;
+  apiType: EvalModelApiType | "antigravity_cli"; repetition: number; status: string; error: string | null;
+  answer?: string; reasoning?: string; svg?: string; rawEvents?: unknown[];
+  usage?: Record<string, unknown> | null; finishReason?: string | null;
+  ttftMs?: number | null; durationMs?: number; width?: number; height?: number;
+  warnings?: string[]; truncated?: boolean; answerChars?: number; reasoningChars?: number;
+  execution?: Record<string, unknown>; diagnostics?: string; conversationId?: string | null;
+}
+export interface SvgParams {
+  repetitions: number; maxTokens: number; temperature: number | null; topP: number | null;
+  timeoutSeconds: number; extraBody: Record<string, unknown>; notes: string;
+}
+export interface SvgJob {
+  id: string; prompt: string; params: SvgParams; startedAt: number; completedAt: number | null;
+  status: string; samples: SvgSample[]; error?: string;
+  votes: { a: string; b: string; winner: "a" | "b" | "tie"; at: number }[];
+}
+export interface SvgJobsResponse {
+  activeId: string | null; jobs: SvgJob[];
+  presets: { id: string; label: string; prompt: string }[];
+}
+export interface SvgPair { token: string; prompt: string; a: string; b: string }
+
+export interface GeminiTaskProgress {
+  status: string;
+  steps?: number;
+  panels?: number;
+}
+export interface GeminiTaskJob {
+  id: string; prompt: string; timeoutSeconds: number; status: string;
+  conversationId: string | null; url: string | null; title: string | null; model: string | null;
+  progress: GeminiTaskProgress | null; steps: string[]; answer?: string | null;
+  error: string | null; screenshot: string | null;
+  startedAt: number; completedAt: number | null; durationMs: number | null; checkedAt?: number | null;
+}
+export interface GeminiTasksResponse {
+  activeId: string | null;
+  driver: { path: string; installed: boolean };
+  jobs: GeminiTaskJob[];
+}
+export interface GeminiDriverInfo { path: string; installed: boolean; python: string | null }

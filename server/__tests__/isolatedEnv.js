@@ -35,10 +35,24 @@ export const CONFIG_PATH_VARS = [
   "ALERTS_JSON_PATH",
   "MODEL_PRICES_JSON_PATH",
   "MODEL_PRICES_FETCH",
+  "EVAL_MODELS_PATH",
+  "EVAL_MODEL_SECRETS_PATH",
+  "EVAL_JOBS_PATH",
+  "EVAL_ACTIVE_PATH",
+  "OPENCODE_AUTH_PATH",
+  "OPENCODE_CONFIG_PATH",
 ];
 
 /** Variables that point at a directory the server writes into. */
-export const CONFIG_DIR_VARS = ["TOOL_EVAL_RESULTS_DIR", "VULNHUNT_RESULTS_DIR", "REA_RESULTS_DIR"];
+export const CONFIG_DIR_VARS = [
+  "TOOL_EVAL_RESULTS_DIR",
+  "VULNHUNT_RESULTS_DIR",
+  "REA_RESULTS_DIR",
+  "EVALESCOPE_OUTPUTS_DIR",
+  "EVAL_JOB_LOG_DIR",
+  "SVG_EVAL_DIR",
+  "GEMINI_TASK_DIR",
+];
 
 /** Env entries mapping each config path variable to a file (or directory) inside `dir`. */
 export function isolatedConfigEnv(dir) {

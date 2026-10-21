@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -18,6 +19,32 @@ const SECRETS_KEY_PATH =
 /** Daily LLM tok/s rollups (gitignored). */
 const LLM_DAILY_JSON_PATH =
   process.env.LLM_DAILY_JSON_PATH || path.join(ROOT, "config", "llm-daily.json");
+
+// ─── Model evaluation (EvalScope) ────────────────────────
+/** Eval model registry — non-secret endpoint metadata (gitignored). */
+const EVAL_MODELS_PATH =
+  process.env.EVAL_MODELS_PATH || path.join(ROOT, "config", "eval-models.json");
+/** Encrypted eval model API keys (never served by API; gitignored). */
+const EVAL_MODEL_SECRETS_PATH =
+  process.env.EVAL_MODEL_SECRETS_PATH || path.join(ROOT, "config", "eval-model-secrets.json");
+/** EvalScope CLI inside its own venv (engine for eval + perf runs). */
+const EVALESCOPE_BIN = process.env.EVALESCOPE_BIN || "evalscope";
+/** Report root that `evalscope service --outputs` scans (shared with the dashboard). */
+const EVALESCOPE_OUTPUTS_DIR =
+  process.env.EVALESCOPE_OUTPUTS_DIR || path.join(os.homedir(), ".local/share/sparkdash/eval-outputs");
+/** EvalScope web dashboard (full detail / HTML reports). */
+const EVALESCOPE_SERVICE_URL =
+  process.env.EVALESCOPE_SERVICE_URL || "http://127.0.0.1:9000";
+/** Job manager state (gitignored). */
+const EVAL_JOBS_PATH =
+  process.env.EVAL_JOBS_PATH || path.join(ROOT, "config", "evalscope-jobs.json");
+const EVAL_ACTIVE_PATH =
+  process.env.EVAL_ACTIVE_PATH || path.join(ROOT, "config", "evalscope-active.json");
+/** Per-job log transcripts. */
+const EVAL_JOB_LOG_DIR =
+  process.env.EVAL_JOB_LOG_DIR || path.join(ROOT, "config", "eval-logs");
+/** Per-job wall clock cap (eval/perf runs can be long; 2h default). */
+const EVAL_JOB_TIMEOUT_MS = parseInt(process.env.EVAL_JOB_TIMEOUT_MS || "7200000", 10);
 /** Cumulative LLM token totals per model (gitignored). */
 const LLM_TOKEN_JSON_PATH =
   process.env.LLM_TOKEN_JSON_PATH || path.join(ROOT, "config", "llm-token-totals.json");
@@ -214,6 +241,15 @@ export {
   SPARKS_SECRETS_PATH,
   SECRETS_KEY_PATH,
   LLM_DAILY_JSON_PATH,
+  EVAL_MODELS_PATH,
+  EVAL_MODEL_SECRETS_PATH,
+  EVALESCOPE_BIN,
+  EVALESCOPE_OUTPUTS_DIR,
+  EVALESCOPE_SERVICE_URL,
+  EVAL_JOBS_PATH,
+  EVAL_ACTIVE_PATH,
+  EVAL_JOB_LOG_DIR,
+  EVAL_JOB_TIMEOUT_MS,
   LLM_TOKEN_JSON_PATH,
   FLEET_ENERGY_JSON_PATH,
   FLEET_ENERGY_MONTHLY_JSON_PATH,

@@ -12,6 +12,13 @@ config/quality-bench-history.json
 config/quality-bench-active.json
 config/showcase-history.json
 config/llm-daily.json
+config/eval-models.json
+config/eval-model-secrets.json
+config/evalscope-jobs.json
+config/evalscope-active.json
+config/eval-logs/
+config/svg-eval/
+config/gemini-task/
 config/llm-token-totals.json
 config/llm-token-totals.json.*
 config/model-prices.json
@@ -53,3 +60,5 @@ config/*.tmp
 config/*.json.*.tmp
 config/rea-runs.json
 config/rea-results/
+
+config.bak-*/

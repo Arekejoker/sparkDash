@@ -19,6 +19,7 @@ import { HermesUpdateDialog } from "./components/SparkPage/HermesUpdateDialog";
 import { OverviewPage } from "./components/OverviewPage/OverviewPage";
 import { ShowcasePage } from "./components/ShowcasePage/ShowcasePage";
 import { ShowcaseView } from "./components/ShowcasePage/ShowcaseView";
+import { ModelEvalPage } from "./components/ModelEvalPage/ModelEvalPage";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { SettingsDialog } from "./components/SettingsDialog";
 import {
@@ -47,6 +48,7 @@ import {
   TEMPS_ID,
   TOKENS_ID,
   COST_ID,
+  EVAL_ID,
   benchId,
   benchTypeOf,
   toolId,
@@ -463,6 +465,7 @@ function DashboardApp() {
     ];
     cmds.push(
       { id: "nav:tokens", group: "Go to", label: "Token totals", hint: "Page", icon: <TokensIcon className="h-4 w-4" />, keywords: "llm tokens generated prompt cached usage", run: () => navigate(TOKENS_ID) },
+      { id: "nav:eval", group: "Go to", label: "Model eval", hint: "Page", icon: <ListIcon className="h-4 w-4" />, keywords: "eval benchmark evalscope mmlu gsm8k speed svg gemini", run: () => navigate(EVAL_ID) },
       { id: "nav:cost", group: "Go to", label: "Cost compare", hint: "Page", icon: <CoinsIcon className="h-4 w-4" />, keywords: "cost price money usd dollars api hosted opus sonnet gpt gemini compare", run: () => navigate(COST_ID) },
       { id: "nav:energy", group: "Go to", label: "Fleet energy", hint: "Page", icon: <BoltIcon className="h-4 w-4" />, keywords: "power kwh watts cost electricity", run: () => navigate(ENERGY_ID) },
       { id: "nav:temps", group: "Go to", label: "Temps", hint: "Page", icon: <ThermometerIcon className="h-4 w-4" />, keywords: "gpu temperature thermal temps heat cooling", run: () => navigate(TEMPS_ID) },
@@ -570,6 +573,8 @@ function DashboardApp() {
             <main key={chartTimeZone} className={telemetryStale || !connected ? "telemetry-stale" : undefined}>
               {activeId === TOKENS_ID ? (
                 <TokensPage sparks={displaySparks} onSelectSpark={navigate} />
+              ) : activeId === EVAL_ID ? (
+                <ModelEvalPage />
               ) : activeId === COST_ID ? (
                 <CostPage />
               ) : activeId === ENERGY_ID ? (

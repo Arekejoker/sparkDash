@@ -1233,3 +1233,29 @@
   font-size: 10px;
   color: var(--color-muted);
 }
+
+/* ai-mode transition progress */
+.ai-mode-track {
+  height: 0.35rem;
+  border-radius: 999px;
+  background: var(--color-border);
+  overflow: hidden;
+  position: relative;
+}
+.ai-mode-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  border-radius: 999px;
+  background: var(--color-accent);
+  animation: ai-mode-slide 1.2s ease-in-out infinite;
+}
+@keyframes ai-mode-slide {
+  0% {
+    left: -40%;
+  }
+  100% {
+    left: 100%;
+  }
+}

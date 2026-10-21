@@ -82,6 +82,34 @@ import { TailscaleProbe } from "./collectors/TailscaleProbe.js";
 import { inspectStartupPreflight, logStartupPreflight } from "./startupPreflight.js";
 import { PROMETHEUS_CONTENT_TYPE, metricsEntries, renderPrometheusMetrics } from "./prometheus.js";
 
+import {
+  runAiMode,
+  AI_MODE_ACTIONS,
+  isAiModeTransitionRunning,
+  summarizeStatus,
+  startAiModeRun,
+  getAiModeLogs,
+} from "./aiMode.js";
+import { evalScopeRunner } from "./collectors/EvalScopeRunner.js";
+import { svgRouter } from "./svg/routes.js";
+import { geminiRouter } from "./gemini/routes.js";
+import { svgEvalRunner } from "./collectors/SvgEvalRunner.js";
+import {
+  listReports as listEvalReports,
+  getReport as getEvalReport,
+  attachJobIds as attachReportJobIds,
+} from "./collectors/EvalScopeReports.js";
+import {
+  listModels as listEvalModels,
+  upsertModel as upsertEvalModel,
+  deleteModel as deleteEvalModel,
+  probeModel as probeEvalModel,
+  getImportCandidates as getEvalImportCandidates,
+  applyImport as applyEvalImport,
+  resolveModel as resolveEvalModel,
+} from "./evalModels.js";
+import { EVALESCOPE_SERVICE_URL } from "./config.js";
+
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -2018,6 +2046,80 @@ app.delete("/api/sparks/:id/llm/showcase/:sessionId", (req, res) => {
   res.json(session);
 });
 
+// ─── ai-mode control ────────────────────────────────────
+// Bridging an external ai-mode binary so the dashboard is a single entry for both
+// monitoring and local model switching (deepseek / mix / media / light).
+// Mutations require a Bearer token matching AUTH_TOKEN. The dashboard itself
+// must run as a host process so child_process inherits the user session.
+
+const allowAiMode = createRateLimiter(10, 60_000);
+
+function requireAiModeAuth(req, res, next) {
+  const token = process.env.AUTH_TOKEN;
+  if (!token) {
+    return res
+      .status(503)
+      .json({ error: "AUTH_TOKEN is not configured; ai-mode control is disabled" });
+  }
+  const provided = req.get("Authorization") || "";
+  const m = provided.match(/^Bearer\s+(.+)$/i);
+  if (!m || m[1] !== token) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
+}
+
+/** Live `ai-mode status` plus a dashboard-friendly summary (read-only, no auth). */
+app.get("/api/ai-mode/status", async (_req, res) => {
+  try {
+    const result = await runAiMode("status");
+    res.json({
+      success: result.ok,
+      ...summarizeStatus(result.status || {}),
+      running: isAiModeTransitionRunning(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** Incremental log for the current/last ai-mode run (read-only, no auth). */
+app.get("/api/ai-mode/logs", (_req, res) => {
+  const raw = _req.query?.since;
+  const since = Number.parseInt(Array.isArray(raw) ? raw[0] : raw, 10);
+  res.json(getAiModeLogs(Number.isFinite(since) ? since : 0));
+});
+
+/**
+ * Start a mode or embedding action: POST { action: one of the configured actions }.
+ * Returns 202 immediately with the run id; progress is streamed via
+ * GET /api/ai-mode/logs (polled by the UI).
+ */
+app.post("/api/ai-mode", requireAiModeAuth, (req, res) => {
+  try {
+    if (!allowAiMode(clientKey(req))) {
+      return res.status(429).json({ error: "Too many requests; try again shortly" });
+    }
+    const action = req.body?.action;
+    if (!AI_MODE_ACTIONS.has(action) || action === "status") {
+      return res
+        .status(400)
+        .json({ error: "action must be a configured ai-mode action" });
+    }
+    const arg = req.body?.arg;
+    if (action === "glm53-decode" && arg !== "fast" && arg !== "stock") {
+      return res.status(400).json({ error: "glm53-decode requires arg fast or stock" });
+    }
+    if (isAiModeTransitionRunning()) {
+      return res.status(409).json({ error: "an ai-mode transition is already running" });
+    }
+    const runId = startAiModeRun(action, arg);
+    res.status(202).json({ success: true, action, runId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Power management ────────────────────────────────────
 // Shutdown uses the host script /usr/local/bin/spark-shutdown (see server/shutdown.js
 // for the local host-namespace drop and the remote command string).
@@ -2264,6 +2366,141 @@ app.get("/metrics", (_req, res) => {
   res.setHeader("Content-Type", PROMETHEUS_CONTENT_TYPE);
   res.end(renderPrometheusMetrics(entries));
 });
+
+// ─── Model evaluation (EvalScope engine) ─────────────────
+/** Service URL as reachable from the browser that is viewing the dashboard. */
+function evalServiceUrlFor(req) {
+  const host = req.hostname || "127.0.0.1";
+  return `http://${host}:9000`;
+}
+
+app.get("/api/eval/models", (_req, res) => {
+  res.json({ models: listEvalModels() });
+});
+
+app.post("/api/eval/models", (req, res) => {
+  try {
+    const model = upsertEvalModel(req.body);
+    res.status(201).json({ model });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.put("/api/eval/models/:id", (req, res) => {
+  try {
+    const model = upsertEvalModel({ ...req.body, id: req.params.id });
+    res.json({ model });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/eval/models/:id", (req, res) => {
+  try {
+    res.json(deleteEvalModel(req.params.id));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post("/api/eval/models/:id/probe", async (req, res) => {
+  try {
+    const result = await probeEvalModel(req.params.id);
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get("/api/eval/models/import/opencode", async (_req, res) => {
+  try {
+    res.json(await getEvalImportCandidates());
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post("/api/eval/models/import/opencode", async (req, res) => {
+  try {
+    res.json(await applyEvalImport(req.body?.selections));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get("/api/eval/jobs", (_req, res) => {
+  res.json(evalScopeRunner.listJobs());
+});
+
+app.post("/api/eval/jobs", (req, res) => {
+  const { kind, modelId } = req.body || {};
+  try {
+    if (kind !== "eval" && kind !== "perf") {
+      return res.status(400).json({ error: "kind must be 'eval' or 'perf'" });
+    }
+    const model = resolveEvalModel(modelId);
+    if (svgEvalRunner.active) {
+      return res.status(409).json({ error: "Wait for the active SVG evaluation to finish" });
+    }
+    const job = evalScopeRunner.start({ kind, model, params: req.body || {} });
+    res.status(202).json(job);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get("/api/eval/jobs/:jobId", (req, res) => {
+  const job = evalScopeRunner.getJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: "Job not found" });
+  res.json(job);
+});
+
+app.delete("/api/eval/jobs/:jobId", (req, res) => {
+  try {
+    res.json(evalScopeRunner.cancel(req.params.jobId));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get("/api/eval/reports", (_req, res) => {
+  try {
+    const reports = listEvalReports();
+    const { active, jobs } = evalScopeRunner.listJobs();
+    attachReportJobIds(reports, active ? [active, ...jobs] : jobs);
+    res.json({ reports });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/eval/reports/:reportId", (req, res) => {
+  const report = getEvalReport(req.params.reportId);
+  if (!report) return res.status(404).json({ error: "Report not found" });
+  res.json(report);
+});
+
+app.get("/api/eval/service", async (req, res) => {
+  const url = evalServiceUrlFor(req);
+  const started = Date.now();
+  try {
+    const health = await fetch(`${EVALESCOPE_SERVICE_URL}/`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    res.json({
+      url,
+      up: health.ok,
+      latencyMs: Date.now() - started,
+      error: health.ok ? null : `HTTP ${health.status}`,
+    });
+  } catch (err) {
+    res.json({ url, up: false, latencyMs: null, error: err.message });
+  }
+});
+
+app.use("/api/svg", svgRouter);
+app.use("/api/gemini", geminiRouter);
 
 // ─── Static files (built frontend) ───────────────────────
 const staticByDir = new Map();

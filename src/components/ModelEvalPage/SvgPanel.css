@@ -1,0 +1,13 @@
+.svg-workbench .bench-input {
+  width: 100%;
+}
+.svg-workbench select.bench-input {
+  width: min(100%, 28rem);
+}
+.svg-workbench .bench-conc-btn {
+  padding: 0.4rem 0.9rem;
+}
+.svg-workbench .pill-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
