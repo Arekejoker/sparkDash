@@ -1,5 +1,9 @@
 # DGX Spark custom branch
 
+> **Status: experimental / local-only.** This branch adds deployment-specific AI
+> mode, EvalScope, Gemini and SVG tooling. It is not the clean showcase build.
+> For the Chinese-only framework build, use the `zh-cn` branch.
+
 This branch is a public, sanitized snapshot of a private DGX Spark deployment of
 [sparkDash](https://github.com/MiaAI-Lab/sparkDash). It is based on sparkDash
 2.50.0 and keeps the upstream Apache-2.0 license.

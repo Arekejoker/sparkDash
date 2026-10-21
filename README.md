@@ -1,8 +1,9 @@
 # sparkDash ⚡ — Multi-unit monitoring dashboard for NVIDIA DGX Spark
 
-> **DGX Spark custom branch:** AI mode, model eval and Simplified Chinese UI
-> additions live in this branch. See [DGX-SPARK.md](DGX-SPARK.md). Deployment
-> configuration and secrets are intentionally not included.
+> **Experimental DGX branch:** AI mode, model eval and local integration
+> experiments live here. See [DGX-SPARK.md](DGX-SPARK.md). For the clean
+> Chinese-only build, switch to the `zh-cn` branch. Deployment configuration and
+> secrets are intentionally not included.
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-arm64-2d9d78?style=flat-square" alt="Platform: ARM64">
