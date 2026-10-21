@@ -1,5 +1,9 @@
 # sparkDash ⚡ — Multi-unit monitoring dashboard for NVIDIA DGX Spark
 
+> **社区简体中文分支：** 默认中文，右下角可切换 `EN / 中文`。说明见
+> [ZH-CN.md](ZH-CN.md)。本分支只包含框架和中文界面，不包含 DGX
+> 本机实验功能。
+
 <p align="center">
   <img src="https://img.shields.io/badge/platform-arm64-2d9d78?style=flat-square" alt="Platform: ARM64">
   <img src="https://img.shields.io/badge/React-19-58c4dc?style=flat-square&logo=react" alt="React 19">
