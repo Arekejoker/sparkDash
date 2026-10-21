@@ -1,8 +1,9 @@
 # sparkDash ⚡ — Multi-unit monitoring dashboard for NVIDIA DGX Spark
 
 > **社区简体中文分支：** 默认中文，右下角可切换 `EN / 中文`。说明见
-> [ZH-CN.md](ZH-CN.md)。本分支只包含框架和中文界面，不包含 DGX
-> 本机实验功能。
+> [ZH-CN.md](ZH-CN.md)，安装和其他设备访问见
+> [QUICKSTART.zh-CN.md](QUICKSTART.zh-CN.md)。本分支只包含框架和中文界面，
+> 不包含 DGX 本机实验功能。
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-arm64-2d9d78?style=flat-square" alt="Platform: ARM64">

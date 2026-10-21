@@ -22,6 +22,9 @@
 
 ## 运行
 
+完整的安装、Docker、局域网和手机访问说明见
+[QUICKSTART.zh-CN.md](QUICKSTART.zh-CN.md)。
+
 ```bash
 npm ci
 npm run build
